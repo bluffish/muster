@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "muster-simulator"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.26"]
+
+[project.optional-dependencies]
+gpu = ["warp-lang>=1.16"]
+rl = ["warp-lang>=1.16", "torch>=2.5", "wandb>=0.18"]
+test = ["pytest>=8"]
+viewer = ["pygame>=2.5"]
+
+[tool.setuptools]
+py-modules = ["simulator", "simulator_gpu", "rl_env", "policy", "train", "viewer"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

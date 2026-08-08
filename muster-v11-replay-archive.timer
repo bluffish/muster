@@ -1,0 +1,12 @@
+[Unit]
+Description=Archive Muster v11 MAVEN episode-mode replays every 10 seconds
+
+[Timer]
+OnBootSec=15s
+OnUnitActiveSec=10s
+AccuracySec=2s
+Persistent=true
+Unit=muster-v11-replay-archive.service
+
+[Install]
+WantedBy=timers.target

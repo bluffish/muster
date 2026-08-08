@@ -1,0 +1,12 @@
+[Unit]
+Description=Refresh the public Muster replay every 10 seconds
+
+[Timer]
+OnBootSec=15s
+OnUnitActiveSec=10s
+AccuracySec=2s
+Persistent=true
+Unit=muster-replay-sync.service
+
+[Install]
+WantedBy=timers.target

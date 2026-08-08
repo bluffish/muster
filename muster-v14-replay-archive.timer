@@ -1,0 +1,12 @@
+[Unit]
+Description=Archive Muster v14 entity-attention perception replays every 10 seconds
+
+[Timer]
+OnBootSec=15s
+OnUnitActiveSec=10s
+AccuracySec=2s
+Persistent=true
+Unit=muster-v14-replay-archive.service
+
+[Install]
+WantedBy=timers.target
