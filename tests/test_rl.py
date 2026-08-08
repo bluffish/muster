@@ -939,6 +939,38 @@ def test_rollout_replay_retargets_environment_and_matchup():
         capture.retarget(0, "nearest", 2)
 
 
+def test_warp_neighbor_search_matches_torch_reference():
+    torch = pytest.importorskip("torch")
+    wp = pytest.importorskip("warp")
+    from rl_env import RLEnv, entity_neighbors
+    from simulator import Config, arena_contains
+
+    device = "cuda" if torch.cuda.is_available() and wp.is_cuda_available() else "cpu"
+    config = Config(soldiers_per_team=24, maximum_episode_seconds=0.1)
+    env = RLEnv(config, num_envs=3, device=device)
+    generator = np.random.default_rng(17)
+    positions = np.empty((3 * 48, 2), np.float32)
+    filled = 0
+    while filled < 3 * 48:
+        candidate = generator.uniform((5, 5), (55, 60), (2,)).astype(np.float32)
+        if arena_contains(candidate, config, margin=config.soldier_radius):
+            positions[filled] = candidate
+            filled += 1
+    positions = positions.reshape(3, 48, 2)
+    health = generator.uniform(0, 100, (3, 48)).astype(np.float32)
+    health[health < 30] = 0.0
+    env.sim.reset({"position": positions, "health": health})
+    state = env.observe()
+
+    reference = entity_neighbors(
+        torch.as_tensor(positions, device=env.device),
+        torch.as_tensor(health > 0, device=env.device),
+        config.soldiers_per_team,
+        env.neighbor_count,
+    )
+    torch.testing.assert_close(state.neighbors.long(), reference.long())
+
+
 def test_entity_neighbors_are_egocentric_living_and_radius_limited():
     torch = pytest.importorskip("torch")
     pytest.importorskip("warp")

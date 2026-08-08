@@ -116,6 +116,61 @@ class _ObservationParams:
     maximum_decision_steps: int
 
 
+_NEIGHBOR_DISTANCES = wp.types.vector(length=ENTITY_NEIGHBORS, dtype=wp.float32)
+_NEIGHBOR_ORDER = wp.types.vector(length=ENTITY_NEIGHBORS, dtype=wp.int32)
+
+
+@wp.kernel
+def _entity_neighbor_search(
+    position: wp.array(dtype=wp.vec2),
+    alive: wp.array(dtype=wp.int32),
+    radius: float,
+    count: int,
+    neighbors: wp.array2d(dtype=wp.int32),
+    p: _ObservationParams,
+):
+    """Per-soldier k-nearest living entities via in-register insertion sort.
+
+    Matches ``entity_neighbors``: ascending distance, radius-capped, self
+    excluded, dead excluded, related-space remap for team-one observers.
+    """
+    index = wp.tid()
+    env = index // p.num_soldiers
+    base = env * p.num_soldiers
+    local = index - base
+    soldiers_per_team = p.num_soldiers // 2
+    me = position[index]
+    distances = _NEIGHBOR_DISTANCES()
+    order = _NEIGHBOR_ORDER()
+    for slot in range(count):
+        distances[slot] = 3.0e38
+        order[slot] = -1
+    limit = radius * radius
+    for other_local in range(p.num_soldiers):
+        if other_local == local:
+            continue
+        other = base + other_local
+        if alive[other] == 0:
+            continue
+        delta = position[other] - me
+        squared = wp.dot(delta, delta)
+        if squared > limit or squared >= distances[count - 1]:
+            continue
+        slot = count - 1
+        while slot > 0 and distances[slot - 1] > squared:
+            distances[slot] = distances[slot - 1]
+            order[slot] = order[slot - 1]
+            slot -= 1
+        distances[slot] = squared
+        order[slot] = other_local
+    observer_team = local // soldiers_per_team
+    for slot in range(count):
+        value = order[slot]
+        if value >= 0 and observer_team == 1:
+            value = (value + soldiers_per_team) % p.num_soldiers
+        neighbors[index, slot] = value
+
+
 @wp.kernel
 def _clear_territory(territory: wp.array(dtype=float)):
     territory[wp.tid()] = 0.0
@@ -386,6 +441,14 @@ class RLEnv:
         self._flat_positions = wp.to_torch(self.sim.position).view(self.num_envs, -1, 2)
         self._flat_alive = wp.to_torch(self.sim.alive).view(self.num_envs, -1)
         self.neighbor_count = min(ENTITY_NEIGHBORS, self.config.soldier_count - 1)
+        self._neighbor_buffer = wp.zeros(
+            (self.sim.total_soldiers, self.neighbor_count),
+            dtype=wp.int32,
+            device=self.sim.device,
+        )
+        self._neighbor_view = wp.to_torch(self._neighbor_buffer).view(
+            self.num_envs, 2, self.soldiers_per_team, self.neighbor_count
+        )
         self.neighbors = torch.full(
             (self.num_envs, 2, self.soldiers_per_team, self.neighbor_count),
             -1,
@@ -516,14 +579,21 @@ class RLEnv:
         )
 
     def _refresh_neighbors(self) -> None:
-        self.neighbors.copy_(
-            entity_neighbors(
-                self._flat_positions,
-                self._flat_alive,
-                self.soldiers_per_team,
-                self.neighbor_count,
+        with self._scope():
+            wp.launch(
+                _entity_neighbor_search,
+                self.sim.total_soldiers,
+                inputs=[
+                    self.sim.position,
+                    self.sim.alive,
+                    ENTITY_RADIUS,
+                    self.neighbor_count,
+                    self._neighbor_buffer,
+                    self.params,
+                ],
+                device=self.sim.device,
             )
-        )
+        self.neighbors.copy_(self._neighbor_view)
 
     def state(self) -> LocalState:
         return LocalState(
