@@ -36,12 +36,16 @@ class Policy(nn.Module):
         mode_count: int = 0,
         mode_size: int = 16,
         log_std_floor: float = -5.0,
+        memory_size: int = 0,
+        message_size: int = 0,
     ):
         super().__init__()
         if mode_count < 0 or mode_size < 1:
             raise ValueError("mode_count must be non-negative and mode_size positive")
         if not -5.0 <= log_std_floor < 1.0:
             raise ValueError("log_std_floor must be in [-5, 1)")
+        if memory_size < 0 or message_size < 0:
+            raise ValueError("memory_size and message_size must be non-negative")
         neighbors, offsets = territory_neighborhood(local_radius)
         self.hidden_size = hidden_size
         self.entity_size = entity_size
@@ -50,6 +54,8 @@ class Policy(nn.Module):
         self.mode_count = mode_count
         self.mode_size = mode_size
         self.log_std_floor = log_std_floor
+        self.memory_size = memory_size
+        self.message_size = message_size
         self.local_tiles = neighbors.shape[1]
         self.attention_heads = math.gcd(4, entity_size)
         self.attention_size = 2 * entity_size
@@ -89,8 +95,10 @@ class Policy(nn.Module):
             nn.Linear(entity_size, entity_size),
             nn.SiLU(),
         )
+        # The message slot is reserved even while communication is disabled so
+        # a later run can switch the channel on without an architecture break.
         self.entity_token = nn.Sequential(
-            nn.Linear(entity_size + 3, entity_size),
+            nn.Linear(entity_size + 3 + message_size, entity_size),
             nn.SiLU(),
         )
         self.entity_query = nn.Linear(entity_size, self.attention_size, bias=False)
@@ -110,7 +118,9 @@ class Policy(nn.Module):
             nn.Linear(3 * entity_size + tile_size + conditioning, hidden_size),
             nn.SiLU(),
         )
-        self.policy_head = nn.Linear(hidden_size, ACTION_SIZE)
+        if memory_size:
+            self.memory_cell = nn.GRUCell(hidden_size, memory_size)
+        self.policy_head = nn.Linear(hidden_size + memory_size, ACTION_SIZE)
         self.global_tile_encoder = nn.Sequential(
             nn.Linear(2 * entity_size + 8, tile_size),
             nn.SiLU(),
@@ -122,7 +132,7 @@ class Policy(nn.Module):
             nn.SiLU(),
             nn.Linear(hidden_size, hidden_size),
         )
-        self.value_head = nn.Linear(hidden_size, 1)
+        self.value_head = nn.Linear(hidden_size + memory_size, 1)
         if mode_count:
             self.mode_embedding = nn.Embedding(mode_count, mode_size)
             self.mode_policy_bias = nn.Linear(mode_size, ACTION_SIZE, bias=False)
@@ -152,7 +162,32 @@ class Policy(nn.Module):
             "mode_count": self.mode_count,
             "mode_size": self.mode_size,
             "log_std_floor": self.log_std_floor,
+            "memory_size": self.memory_size,
+            "message_size": self.message_size,
         }
+
+    def initial_memory(self, state: LocalState) -> torch.Tensor | None:
+        if not self.memory_size:
+            return None
+        return state.alive.new_zeros(
+            (*state.alive.shape, self.memory_size), dtype=torch.float32
+        )
+
+    def _advance_memory(
+        self, state: LocalState, hidden: torch.Tensor, memory: torch.Tensor | None
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        """Fold the situational summary into each soldier's recurrent state."""
+        if not self.memory_size:
+            return hidden, None
+        if memory is None:
+            memory = self.initial_memory(state)
+        flat_hidden = hidden.reshape(-1, self.hidden_size)
+        flat_memory = memory.reshape(-1, self.memory_size).to(flat_hidden.dtype)
+        updated = self.memory_cell(flat_hidden, flat_memory).view(
+            *hidden.shape[:-1], self.memory_size
+        )
+        updated = updated * state.alive.bool().unsqueeze(-1).to(updated.dtype)
+        return torch.cat((hidden, updated), dim=-1), updated.float()
 
     def _mode_embedding(self, state: LocalState) -> torch.Tensor | None:
         if not self.mode_count:
@@ -241,9 +276,12 @@ class Policy(nn.Module):
         observer = state.features[..., 8:10].to(positions.dtype).unsqueeze(-2)
         offsets = (positions - observer) * ENTITY_OFFSET_SCALE
         enemy = (safe >= soldiers).to(embeddings.dtype).unsqueeze(-1)
-        tokens = self.entity_token(
-            torch.cat((embeddings, offsets.to(embeddings.dtype), enemy), dim=-1)
-        )
+        token_inputs = [embeddings, offsets.to(embeddings.dtype), enemy]
+        if self.message_size:
+            token_inputs.append(
+                embeddings.new_zeros((*embeddings.shape[:-1], self.message_size))
+            )
+        tokens = self.entity_token(torch.cat(token_inputs, dim=-1))
 
         heads, head_width = self.attention_heads, self.attention_head_size
         query = self.entity_query(encoded[:, :, 0]).view(
@@ -350,6 +388,7 @@ class Policy(nn.Module):
         sums: torch.Tensor,
         counts: torch.Tensor,
         mode_embed: torch.Tensor | None = None,
+        memory: torch.Tensor | None = None,
     ) -> torch.Tensor:
         ally_count = counts[:, :, 0]
         enemy_count = counts[:, :, 1]
@@ -395,7 +434,12 @@ class Policy(nn.Module):
             global_inputs.append(mode_embed.to(global_tiles.dtype))
         global_context = torch.cat(global_inputs, dim=-1)
         global_hidden = self.global_value_encoder(global_context).unsqueeze(-2)
-        value = self.value_head(F.silu(hidden + global_hidden)).squeeze(-1).float()
+        value_input = F.silu(hidden + global_hidden)
+        if self.memory_size:
+            value_input = torch.cat(
+                (value_input, memory.to(value_input.dtype)), dim=-1
+            )
+        value = self.value_head(value_input).squeeze(-1).float()
         return value * state.alive.to(torch.float32)
 
     def _distribution(self, mean: torch.Tensor) -> Normal:
@@ -409,63 +453,89 @@ class Policy(nn.Module):
         return (stable.log_prob(raw.float()) - correction).sum(-1)
 
     def act(
-        self, state: LocalState, deterministic: bool = False
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        self,
+        state: LocalState,
+        memory: torch.Tensor | None = None,
+        deterministic: bool = False,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None]:
         with self._compute(state):
             mode_embed = self._mode_embedding(state)
             encoded, related, cells, alive = self._encode(state)
             hidden, sums, counts = self._backbone(
                 state, encoded, related, cells, alive, mode_embed
             )
-            distribution = self._distribution(self._policy_mean(hidden, mode_embed))
+            combined, new_memory = self._advance_memory(state, hidden, memory)
+            distribution = self._distribution(self._policy_mean(combined, mode_embed))
             raw = distribution.mean if deterministic else distribution.sample()
             actions = raw.float().tanh()
             mask = state.alive.bool().to(actions.dtype)
             return (
                 actions * mask.unsqueeze(-1),
                 self._log_prob(distribution, raw, actions) * mask,
-                self._values(state, hidden, sums, counts, mode_embed),
+                self._values(state, hidden, sums, counts, mode_embed, new_memory),
+                new_memory,
             )
 
-    def actor_actions(self, state: LocalState, deterministic: bool = False) -> torch.Tensor:
-        """Run the shared backbone and policy head without the value head."""
+    def actor_step(
+        self,
+        state: LocalState,
+        memory: torch.Tensor | None = None,
+        deterministic: bool = False,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        """Actor forward without the value head, carrying recurrent state."""
         with self._compute(state):
             mode_embed = self._mode_embedding(state)
             encoded, related, cells, alive = self._encode(state)
             hidden, _, _ = self._backbone(
                 state, encoded, related, cells, alive, mode_embed
             )
-            distribution = self._distribution(self._policy_mean(hidden, mode_embed))
+            combined, new_memory = self._advance_memory(state, hidden, memory)
+            distribution = self._distribution(self._policy_mean(combined, mode_embed))
             raw = distribution.mean if deterministic else distribution.sample()
-            return raw.float().tanh() * state.alive.bool().unsqueeze(-1)
+            actions = raw.float().tanh() * state.alive.bool().unsqueeze(-1)
+            return actions, new_memory
+
+    def actor_actions(self, state: LocalState, deterministic: bool = False) -> torch.Tensor:
+        """Single memoryless actor step; recurrent state starts at zero."""
+        return self.actor_step(state, None, deterministic)[0]
 
     def evaluate_actions(
-        self, state: LocalState, actions: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        self,
+        state: LocalState,
+        actions: torch.Tensor,
+        memory: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None]:
         with self._compute(state):
             mode_embed = self._mode_embedding(state)
             encoded, related, cells, alive = self._encode(state)
             hidden, sums, counts = self._backbone(
                 state, encoded, related, cells, alive, mode_embed
             )
-            distribution = self._distribution(self._policy_mean(hidden, mode_embed))
+            combined, new_memory = self._advance_memory(state, hidden, memory)
+            distribution = self._distribution(self._policy_mean(combined, mode_embed))
             bounded = actions.float().clamp(-1 + 1e-6, 1 - 1e-6)
             raw = 0.5 * (torch.log1p(bounded) - torch.log1p(-bounded))
             log_prob = self._log_prob(distribution, raw, bounded)
             entropy = Normal(distribution.loc.float(), distribution.scale.float()).entropy().sum(-1)
             mask = state.alive.bool().to(log_prob.dtype)
-            return log_prob * mask, entropy * mask, self._values(
-                state, hidden, sums, counts, mode_embed
+            return (
+                log_prob * mask,
+                entropy * mask,
+                self._values(state, hidden, sums, counts, mode_embed, new_memory),
+                new_memory,
             )
 
-    def value(self, state: LocalState) -> torch.Tensor:
+    def value(
+        self, state: LocalState, memory: torch.Tensor | None = None
+    ) -> torch.Tensor:
         with self._compute(state):
             mode_embed = self._mode_embedding(state)
             encoded, related, cells, alive = self._encode(state)
             hidden, sums, counts = self._backbone(
                 state, encoded, related, cells, alive, mode_embed
             )
-            return self._values(state, hidden, sums, counts, mode_embed)
+            _, new_memory = self._advance_memory(state, hidden, memory)
+            return self._values(state, hidden, sums, counts, mode_embed, new_memory)
 
 
 __all__ = ["ACTION_SIZE", "CHECKPOINT_VERSION", "Policy"]

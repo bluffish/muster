@@ -34,6 +34,26 @@ to avoid side bias.
 
 The only reward is zero-sum weighted territory change. With `gamma=1`, its episode sum equals final territory advantage. Normal cells have weight 1; the 21 strongpoint cells have weight 30.
 
+## GRU memory + sequence PPO (v15, built, NOT yet launched)
+
+v15 gives each soldier a persistent 64-unit GRU state (`--memory-size 64`)
+between the backbone and the heads, trained with truncated backprop through
+time over 15-decision windows (`--bptt-window 15`; recurrent-branch PPO
+minibatches are (window, env) chunks instead of shuffled timesteps, and the
+rollout stores hidden states at window boundaries). Memory zeroes on death
+and episode reset; the pool, anchor, and evaluation paths all carry it. The
+per-entity message slot is reserved but dormant (`--message-size 8` widens
+entity tokens with a zero-fed channel) so the v16 communication run can
+switch messaging on without an architecture break.
+
+All memory kwargs default to zero, so v14 checkpoints remain loadable and
+`CHECKPOINT_VERSION` stays 11. **Launch gate:** start
+`muster-training-v15.service` only after v14 delivers its baseline verdict —
+either combat ignition plus a ~500-update anchor plateau, or ~u2500 without
+ignition. Assets are ready: `run_training_v15.sh`,
+`muster-training-v15.service`, `archive_v15_replays.sh` and the v15 archive
+service/timer (none installed or launched).
+
 ## Entity-attention perception (v14)
 
 v14 replaces the pooled entity sense with egocentric per-entity attention.

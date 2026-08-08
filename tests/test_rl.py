@@ -15,7 +15,7 @@ def test_rl_step_and_policy_are_finite():
     )
     state = env.reset()
     policy = Policy(hidden_size=32, entity_size=8, tile_size=16).to(state.features.device)
-    actions, log_prob, value = policy.act(state)
+    actions, log_prob, value, _ = policy.act(state)
     assert state.features.shape == (2, 2, 2, LOCAL_FEATURE_SIZE)
     assert state.cells.shape == (2, 2, 2)
     assert state.owners.shape == (2, TERRITORY_CELLS)
@@ -141,7 +141,7 @@ def test_mappo_policy_and_value_heads_are_per_soldier():
 
     state, _ = _synthetic_state(torch)
     policy = Policy(hidden_size=32, entity_size=8, tile_size=16)
-    actions, _, values = policy.act(state)
+    actions, _, values, _ = policy.act(state)
     assert policy.policy_head.in_features == policy.value_head.in_features == 32
     assert policy.global_value_encoder[-1].out_features == 32
     assert CHECKPOINT_VERSION == 11
@@ -359,7 +359,7 @@ def test_actor_is_side_equivariant_at_the_symmetric_start():
     env = RLEnv(Config(soldiers_per_team=4), device="cpu")
     state = env.reset()
     policy = Policy(hidden_size=32, entity_size=8, tile_size=16).eval()
-    actions, _, values = policy.act(state, deterministic=True)
+    actions, _, values, _ = policy.act(state, deterministic=True)
 
     torch.testing.assert_close(state.features[:, 0], state.features[:, 1])
     torch.testing.assert_close(actions[:, 0], actions[:, 1], rtol=1e-5, atol=1e-6)
@@ -1034,3 +1034,100 @@ def test_environment_neighbors_exclude_self_and_far_entities():
                     positions[0, global_index] - positions[0, team * 4 + soldier]
                 ).norm()
                 assert float(distance) <= ENTITY_RADIUS + 1e-4
+
+
+def test_memory_policy_is_stateful_and_resets_dead_soldiers():
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("warp")
+    from policy import Policy
+
+    torch.manual_seed(21)
+    state, _ = _synthetic_state(torch)
+    policy = Policy(hidden_size=32, entity_size=8, tile_size=16, memory_size=8).eval()
+    memory = policy.initial_memory(state)
+    assert memory.shape == (1, 2, 12, 8) and not memory.any()
+
+    first, _, _, memory_one = policy.act(state, memory, deterministic=True)
+    assert memory_one.abs().sum() > 0
+    second, _, _, memory_two = policy.act(state, memory_one, deterministic=True)
+    assert not torch.equal(first, second)
+    assert not torch.equal(memory_one, memory_two)
+
+    dead = state.alive.clone()
+    dead[0, 0, -1] = False
+    dead_state = state._replace(alive=dead)
+    _, _, _, dead_memory = policy.act(dead_state, memory_one, deterministic=True)
+    assert not dead_memory[0, 0, -1].any()
+    assert dead_memory[0, 0, 0].any()
+
+    legacy = Policy(hidden_size=32, entity_size=8, tile_size=16)
+    assert legacy.initial_memory(state) is None
+    actions, _, _, carried = legacy.act(state)
+    assert carried is None and actions.shape == (1, 2, 12, 4)
+
+
+def test_message_slot_is_reserved_but_dormant():
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("warp")
+    from policy import Policy
+
+    torch.manual_seed(22)
+    state, _ = _synthetic_state(torch)
+    policy = Policy(hidden_size=32, entity_size=8, tile_size=16, message_size=8).eval()
+    assert policy.entity_token[0].in_features == 8 + 3 + 8
+    assert policy.model_kwargs["message_size"] == 8
+    actions = policy.actor_actions(state, deterministic=True)
+    assert actions.isfinite().all()
+
+
+def test_sequence_evaluation_reproduces_collection_log_probs():
+    torch = pytest.importorskip("torch")
+    wp = pytest.importorskip("warp")
+    from policy import Policy
+    from rl_env import RLEnv, LocalState
+    from simulator import Config
+    from train import STATE_KEYS, collect_rollout, make_rollout
+
+    device = "cuda" if torch.cuda.is_available() and wp.is_cuda_available() else "cpu"
+    torch.manual_seed(23)
+    env = RLEnv(
+        Config(soldiers_per_team=2, maximum_episode_seconds=0.4),
+        num_envs=2,
+        device=device,
+    )
+    state = env.reset()
+    policy = Policy(hidden_size=32, entity_size=8, tile_size=16, memory_size=8).to(env.device)
+    policy.use_bf16 = False
+    window = 2
+    rollout = make_rollout(4, state, memory_size=8, bptt_window=window)
+    learner_teams = torch.tensor([[True, False], [False, True]], device=env.device)
+    learner_memory = policy.initial_memory(state)
+    collect_rollout(
+        env,
+        policy,
+        rollout,
+        state,
+        learner_teams,
+        None,
+        None,
+        learner_memory=learner_memory,
+        bptt_window=window,
+    )
+    assert rollout["memory"].shape == (2, 2, 2, 2, 8)
+    assert not rollout["memory"][0].any()
+
+    for window_index in range(2):
+        memory = rollout["memory"][window_index].clone()
+        for offset in range(window):
+            step = window_index * window + offset
+            step_state = LocalState(*(rollout[name][step] for name in STATE_KEYS))
+            log_prob, _, value, memory = policy.evaluate_actions(
+                step_state, rollout["actions"][step], memory
+            )
+            alive = step_state.alive.bool()
+            torch.testing.assert_close(
+                log_prob[alive], rollout["log_prob"][step][alive], rtol=1e-3, atol=1e-4
+            )
+            torch.testing.assert_close(
+                value[alive], rollout["value"][step][alive], rtol=1e-3, atol=1e-4
+            )

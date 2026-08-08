@@ -1,0 +1,8 @@
+[Unit]
+Description=Archive bowen3 Muster v15 GRU memory training replays
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/muster-v15-archive-replays

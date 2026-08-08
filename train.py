@@ -73,11 +73,22 @@ class OpponentPool:
         return self._sample_slots((num_envs,))
 
     @torch.no_grad()
-    def actions(self, state: LocalState, slots: torch.Tensor) -> torch.Tensor:
+    def actions(
+        self,
+        state: LocalState,
+        slots: torch.Tensor,
+        memory: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         output = torch.empty((*state.features.shape[:-1], 4), device=state.features.device)
         for slot, model in enumerate(self.models):
             selected = slots == slot
-            output[selected] = model.actor_actions(select_state(state, selected))
+            slot_memory = memory[selected] if memory is not None else None
+            actions, new_memory = model.actor_step(
+                select_state(state, selected), slot_memory
+            )
+            output[selected] = actions
+            if memory is not None:
+                memory[selected] = new_memory
         return output
 
     def resample_finished(self, slots: torch.Tensor, finished: torch.Tensor) -> None:
@@ -293,7 +304,7 @@ def compile_policies(policy: Policy, pool: OpponentPool | None, mode: str) -> No
     policy.evaluate_actions = torch.compile(policy.evaluate_actions, mode=mode)
     if pool is not None:
         for model in pool.models:
-            model.actor_actions = torch.compile(model.actor_actions, mode=mode, dynamic=True)
+            model.actor_step = torch.compile(model.actor_step, mode=mode, dynamic=True)
 
 
 def reward_from_facts(
@@ -525,8 +536,9 @@ class AnchorEvaluator:
         env.mode.copy_(self.assigned_modes)
         state = env.state()
         facts = env.facts
+        memory = policy.initial_memory(state)
         for _ in range(self.decisions):
-            learner = policy.actor_actions(state, deterministic=True)
+            learner, memory = policy.actor_step(state, memory, deterministic=True)
             actions = torch.where(self.learner_mask, learner, self.opponent.act())
             for repeat in range(self.action_repeat):
                 state, facts = env.step(
@@ -559,10 +571,27 @@ class AnchorEvaluator:
         return metrics
 
 
-def make_rollout(length: int, state: LocalState) -> dict[str, torch.Tensor]:
+def make_rollout(
+    length: int,
+    state: LocalState,
+    memory_size: int = 0,
+    bptt_window: int = 1,
+) -> dict[str, torch.Tensor]:
     envs, teams, soldiers, features = state.features.shape
     device = state.features.device
+    memory = (
+        {
+            "memory": torch.zeros(
+                (length // bptt_window, envs, teams, soldiers, memory_size),
+                dtype=torch.float32,
+                device=device,
+            )
+        }
+        if memory_size
+        else {}
+    )
     return {
+        **memory,
         "features": torch.empty(
             (length, envs, teams, soldiers, features),
             dtype=state.features.dtype,
@@ -642,6 +671,9 @@ def collect_rollout(
     replay: RolloutReplay | None = None,
     nearest_opponent: NearestEnemyOpponent | None = None,
     scripted_envs: torch.Tensor | None = None,
+    learner_memory: torch.Tensor | None = None,
+    opponent_memory: torch.Tensor | None = None,
+    bptt_window: int = 1,
 ) -> tuple[LocalState, torch.Tensor, float]:
     synchronize(state.features.device)
     started = time.perf_counter()
@@ -653,17 +685,23 @@ def collect_rollout(
     for step in range(rollout["features"].shape[0]):
         for name, tensor in zip(STATE_KEYS, state, strict=True):
             rollout[name][step].copy_(tensor)
-        learner_actions, log_prob, value = policy.act(state)
+        if learner_memory is not None and step % bptt_window == 0:
+            rollout["memory"][step // bptt_window].copy_(learner_memory)
+        learner_actions, log_prob, value, new_memory = policy.act(state, learner_memory)
+        if learner_memory is not None:
+            learner_memory.copy_(new_memory)
         if pool is not None and nearest_opponent is not None:
             opponent_actions = torch.where(
                 scripted_envs[:, None, None, None],
                 nearest_opponent.act(),
-                pool.actions(state, opponent_slots),
+                pool.actions(state, opponent_slots, opponent_memory),
             )
             actions = torch.where(learner_mask, learner_actions, opponent_actions)
         elif pool is not None:
             actions = torch.where(
-                learner_mask, learner_actions, pool.actions(state, opponent_slots)
+                learner_mask,
+                learner_actions,
+                pool.actions(state, opponent_slots, opponent_memory),
             )
         elif nearest_opponent is not None:
             actions = torch.where(
@@ -703,7 +741,13 @@ def collect_rollout(
         rollout["summary"][step].copy_(
             env.team_summary(step_damage, step_territory_delta)
         )
-    bootstrap = policy.value(state)
+        finished = rollout["done"][step]
+        if bool(finished.any()):
+            if learner_memory is not None:
+                learner_memory[finished] = 0.0
+            if opponent_memory is not None:
+                opponent_memory[finished] = 0.0
+    bootstrap = policy.value(state, learner_memory)
     synchronize(state.features.device)
     return state, bootstrap, time.perf_counter() - started
 
@@ -722,6 +766,131 @@ def compute_gae(
         rollout["advantage"][step].copy_(advantage)
 
 
+def _ppo_losses(
+    ratio: torch.Tensor,
+    log_ratio: torch.Tensor,
+    agent_advantage: torch.Tensor,
+    value: torch.Tensor,
+    value_target: torch.Tensor,
+    entropy: torch.Tensor,
+    clip: float,
+    value_coefficient: float,
+    entropy_coefficient: float,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    policy_loss = -torch.minimum(
+        ratio * agent_advantage,
+        ratio.clamp(1 - clip, 1 + clip) * agent_advantage,
+    ).mean()
+    value_loss = 0.5 * (value - value_target).square().mean()
+    entropy_mean = entropy.mean()
+    loss = policy_loss + value_coefficient * value_loss - entropy_coefficient * entropy_mean
+    with torch.no_grad():
+        approximate_kl = (ratio - 1 - log_ratio).mean()
+    return loss, policy_loss, value_loss, entropy_mean, approximate_kl
+
+
+def ppo_update_sequences(
+    policy: Policy,
+    optimizer: torch.optim.Optimizer,
+    rollout: dict[str, torch.Tensor],
+    learner_teams: torch.Tensor,
+    epochs: int,
+    minibatches: int,
+    clip: float,
+    value_coefficient: float,
+    entropy_coefficient: float,
+    maximum_gradient_norm: float,
+    target_kl: float,
+    bptt_window: int,
+) -> dict[str, float]:
+    """Recurrent PPO: minibatches of (window, env) chunks, backprop through time."""
+    length, envs = rollout["done"].shape
+    windows = length // bptt_window
+    chunks = windows * envs
+    minibatch_size = max(1, (chunks + minibatches - 1) // minibatches)
+    device = rollout["features"].device
+    alive_mask = rollout["alive"].bool() & learner_teams[None, :, :, None]
+    selected_advantage = rollout["advantage"][alive_mask]
+    advantage_mean = selected_advantage.mean()
+    advantage_scale = selected_advantage.std(unbiased=False).clamp_min(1e-8)
+
+    totals = torch.zeros(6, device=device)
+    updates = 0
+    stopped_early = False
+    for _ in range(epochs):
+        epoch_kl = torch.zeros((), device=device)
+        epoch_updates = 0
+        order = torch.randperm(chunks, device=device)
+        for start in range(0, chunks, minibatch_size):
+            batch = order[start : start + minibatch_size]
+            window_index = batch // envs
+            env_index = batch % envs
+            memory = rollout["memory"][window_index, env_index].clone()
+            new_parts, entropy_parts, value_parts = [], [], []
+            old_log_parts, old_advantage_parts, old_value_parts = [], [], []
+            for offset in range(bptt_window):
+                step = window_index * bptt_window + offset
+                state = LocalState(
+                    *(rollout[name][step, env_index] for name in STATE_KEYS)
+                )
+                new_log_prob, entropy, value, memory = policy.evaluate_actions(
+                    state, rollout["actions"][step, env_index], memory
+                )
+                agents = state.alive.bool() & learner_teams[env_index].unsqueeze(-1)
+                new_parts.append(new_log_prob[agents])
+                entropy_parts.append(entropy[agents])
+                value_parts.append(value[agents])
+                old_log_parts.append(rollout["log_prob"][step, env_index][agents])
+                old_advantage_parts.append(rollout["advantage"][step, env_index][agents])
+                old_value_parts.append(rollout["value"][step, env_index][agents])
+                finished = rollout["done"][step, env_index]
+                if bool(finished.any()):
+                    memory = memory * (~finished).view(-1, 1, 1, 1).to(memory.dtype)
+            log_ratio = torch.cat(new_parts) - torch.cat(old_log_parts)
+            ratio = log_ratio.exp()
+            old_advantage = torch.cat(old_advantage_parts)
+            agent_advantage = (old_advantage - advantage_mean) / advantage_scale
+            value_target = old_advantage + torch.cat(old_value_parts)
+            loss, policy_loss, value_loss, entropy_mean, approximate_kl = _ppo_losses(
+                ratio,
+                log_ratio,
+                agent_advantage,
+                torch.cat(value_parts),
+                value_target,
+                torch.cat(entropy_parts),
+                clip,
+                value_coefficient,
+                entropy_coefficient,
+            )
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            gradient_norm = nn.utils.clip_grad_norm_(policy.parameters(), maximum_gradient_norm)
+            optimizer.step()
+            with torch.no_grad():
+                epoch_kl.add_(approximate_kl)
+                totals.add_(
+                    torch.stack(
+                        (
+                            policy_loss,
+                            value_loss,
+                            entropy_mean,
+                            approximate_kl,
+                            ((ratio - 1).abs() > clip).float().mean(),
+                            gradient_norm,
+                        )
+                    )
+                )
+            updates += 1
+            epoch_updates += 1
+        if target_kl > 0 and float(epoch_kl / epoch_updates) > target_kl:
+            stopped_early = True
+            break
+    names = ("policy_loss", "value_loss", "entropy", "approximate_kl", "clip_fraction", "gradient_norm")
+    metrics = dict(zip(names, (totals / updates).tolist(), strict=True))
+    metrics.update(optimizer_steps=updates, early_stopped=float(stopped_early))
+    return metrics
+
+
 def ppo_update(
     policy: Policy,
     optimizer: torch.optim.Optimizer,
@@ -734,7 +903,23 @@ def ppo_update(
     entropy_coefficient: float,
     maximum_gradient_norm: float,
     target_kl: float,
+    bptt_window: int = 1,
 ) -> dict[str, float]:
+    if "memory" in rollout:
+        return ppo_update_sequences(
+            policy,
+            optimizer,
+            rollout,
+            learner_teams,
+            epochs,
+            minibatches,
+            clip,
+            value_coefficient,
+            entropy_coefficient,
+            maximum_gradient_norm,
+            target_kl,
+            bptt_window,
+        )
     length, envs = rollout["done"].shape
     batch_size = length * envs
     minibatch_size = max(1, (batch_size + minibatches - 1) // minibatches)
@@ -755,7 +940,7 @@ def ppo_update(
         for start in range(0, batch_size, minibatch_size):
             batch = order[start : start + minibatch_size]
             state = LocalState(*(flat[name][batch] for name in STATE_KEYS))
-            new_log_prob, entropy, value = policy.evaluate_actions(state, flat["actions"][batch])
+            new_log_prob, entropy, value, _ = policy.evaluate_actions(state, flat["actions"][batch])
             agents = state.alive.bool() & team_mask[batch].unsqueeze(-1)
             log_ratio = new_log_prob[agents] - flat["log_prob"][batch][agents]
             ratio = log_ratio.exp()
@@ -891,17 +1076,28 @@ def write_evaluation_replay(
 
     held_actions = None
     held_steps = 0
+    held_memory = evaluation.initial_memory(env.state())
+    held_opponent_memory = (
+        evaluation_opponent.initial_memory(env.state())
+        if evaluation_opponent is not None
+        else None
+    )
 
     def act(_snapshot, _config):
-        nonlocal held_actions, held_steps
+        nonlocal held_actions, held_steps, held_memory, held_opponent_memory
         if held_steps == 0:
             state = env.observe()
             with torch.no_grad():
-                actions, _, _ = evaluation.act(state, deterministic=True)
+                actions, _, _, held_memory = evaluation.act(
+                    state, held_memory, deterministic=True
+                )
                 if evaluation_opponent is not None:
-                    actions[:, 1] = evaluation_opponent.actor_actions(
-                        state, deterministic=True
-                    )[:, 1]
+                    opponent_actions, held_opponent_memory = (
+                        evaluation_opponent.actor_step(
+                            state, held_opponent_memory, deterministic=True
+                        )
+                    )
+                    actions[:, 1] = opponent_actions[:, 1]
                 elif isinstance(opponent, str):
                     scripted = torch.as_tensor(
                         scripted_policies[opponent](_snapshot, _config), device=env.device
@@ -1013,6 +1209,24 @@ def parse_args() -> argparse.Namespace:
         "--log-std-floor",
         type=float,
         help="override the policy's minimum log standard deviation",
+    )
+    parser.add_argument(
+        "--memory-size",
+        type=int,
+        default=0,
+        help="per-soldier GRU hidden units; zero keeps the feedforward policy",
+    )
+    parser.add_argument(
+        "--bptt-window",
+        type=int,
+        default=15,
+        help="decisions per truncated-backprop window; must divide --rollout",
+    )
+    parser.add_argument(
+        "--message-size",
+        type=int,
+        default=0,
+        help="reserved per-entity message embedding width (dormant channel)",
     )
     parser.add_argument(
         "--opponent", choices=("self", "pool", "nearest", "mixed"), default="pool"
@@ -1139,10 +1353,15 @@ def main() -> None:
         "local_radius": args.local_radius,
         "mode_count": args.mode_count,
         "mode_size": args.mode_size,
+        "memory_size": args.memory_size,
+        "message_size": args.message_size,
     }
     if args.log_std_floor is not None:
         model_kwargs["log_std_floor"] = args.log_std_floor
     mode_count = int(model_kwargs.get("mode_count", 0) or 0)
+    memory_size = int(model_kwargs.get("memory_size", 0) or 0)
+    if memory_size and args.rollout % args.bptt_window:
+        raise ValueError("--rollout must be divisible by --bptt-window")
     env = RLEnv(config, args.envs, args.device, mode_count=max(1, mode_count))
     policy = Policy(**model_kwargs).to(device)
     policy.use_bf16 = args.dtype == "bf16"
@@ -1204,7 +1423,11 @@ def main() -> None:
         compile_policies(policy, pool, args.compile_mode)
 
     state = env.reset()
-    rollout = make_rollout(args.rollout, state)
+    rollout = make_rollout(args.rollout, state, memory_size, args.bptt_window)
+    learner_memory = policy.initial_memory(state)
+    opponent_memory = (
+        policy.initial_memory(state) if memory_size and pool is not None else None
+    )
     learner_teams = torch.zeros((args.envs, 2), dtype=torch.bool, device=device)
     indices = torch.arange(args.envs, device=device)
     learner_teams[indices, indices.remainder(2)] = True
@@ -1262,6 +1485,9 @@ def main() -> None:
             replay_capture if replay_due else None,
             nearest_opponent=nearest_opponent,
             scripted_envs=scripted_envs,
+            learner_memory=learner_memory,
+            opponent_memory=opponent_memory,
+            bptt_window=args.bptt_window,
         )
         if replay_due:
             replay = replay_capture.replay(rollout["done"], rollout["winner"], update)
@@ -1294,6 +1520,7 @@ def main() -> None:
             args.entropy_coefficient,
             args.maximum_gradient_norm,
             args.target_kl,
+            args.bptt_window,
         )
         synchronize(device)
         learning_seconds = time.perf_counter() - started
