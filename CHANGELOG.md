@@ -3,7 +3,18 @@
 Version history of the training stack and game rules. Each run's exact flags
 are preserved in its checkpoint (`train_args`) and in git history.
 
-## v20.1 — strongpoint scarcity (rules 0.9, current)
+## v20.2 — the long map (rules 0.10, current)
+Elongated hexagonal arena: flat north/south walls tapering to east/west
+points, 39 columns x 19 rows at the waist (561 cells, world 88.5 x 49.4,
+long axis = attack axis, spawn separation ~44 units, strongpoints moved
+to (0,-6),(0,0),(0,6)). Groundwork for the assault ("one base per side,
+score only on the enemy's") game mode: longer raids make interception,
+screening, and recall real decisions. Replays now ship the axial cell
+list and tile size so the viewer renders any lattice; wall collision
+generalized to per-pair apothems; CHECKPOINT_VERSION 13 (old-map
+checkpoints are incompatible by geometry).
+
+## v20.1 — strongpoint scarcity (rules 0.9)
 `STRONGPOINT_WEIGHT` 30 -> 90 (strongpoints now ~78% of total score);
 run `local-hex-v20-charger-selfplay-v3` restarts charger-seeded pure
 self-play under the new rules. The v2 run proved the deeper problem was

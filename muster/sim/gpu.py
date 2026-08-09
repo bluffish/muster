@@ -15,8 +15,9 @@ from muster.sim import (
     TERRITORY_CELLS,
     TERRITORY_INITIAL_OWNER,
     TERRITORY_LOOKUP,
-    TERRITORY_LOOKUP_DIAMETER,
-    TERRITORY_LOOKUP_RADIUS,
+    TERRITORY_LOOKUP_Q_DIAMETER,
+    TERRITORY_LOOKUP_Q_RADIUS,
+    TERRITORY_LOOKUP_R_RADIUS,
     TERRITORY_TOTAL_WEIGHT,
     Config,
     CpuSimulator,
@@ -60,8 +61,13 @@ class _Params:
     bridge_width: float
     maximum_decision_steps: int
     territory_tile_size: float
-    territory_lookup_radius: int
-    territory_lookup_diameter: int
+    lookup_q_radius: int
+    lookup_r_radius: int
+    lookup_q_diameter: int
+    apothem_flat: float
+    apothem_slant: float
+    slant_nx: float
+    slant_ny: float
     territory_cells: int
     territory_control_sigma: float
     territory_total_weight: float
@@ -112,17 +118,19 @@ def _resolve_static(position: wp.vec2, velocity: wp.vec2, p: _Params) -> wp.vec4
     vx = velocity[0]
     vy = velocity[1]
     r = p.radius
-    limit = p.world_width * 0.5 - r
     for iteration in range(2):
         for axis in range(3):
-            nx = float(1.0)
-            ny = float(0.0)
+            nx = float(0.0)
+            ny = float(1.0)
+            limit = p.apothem_flat - r
             if axis == 1:
-                nx = 0.5
-                ny = 0.8660254037844386
+                nx = p.slant_nx
+                ny = p.slant_ny
+                limit = p.apothem_slant - r
             elif axis == 2:
-                nx = -0.5
-                ny = 0.8660254037844386
+                nx = -p.slant_nx
+                ny = p.slant_ny
+                limit = p.apothem_slant - r
             point = wp.vec2(x, y)
             signed_distance = x * nx + y * ny
             side = float(1.0)
@@ -189,8 +197,9 @@ def _territory_cell(
     world_width: float,
     world_height: float,
     tile_size: float,
-    lookup_radius: int,
-    lookup_diameter: int,
+    lookup_q_radius: int,
+    lookup_r_radius: int,
+    lookup_q_diameter: int,
 ) -> int:
     x = (position[0] - world_width * 0.5) / tile_size
     y = (position[1] - world_height * 0.5) / tile_size
@@ -207,9 +216,9 @@ def _territory_cell(
         rounded_q = -rounded_r - rounded_s
     elif difference_r > difference_s:
         rounded_r = -rounded_q - rounded_s
-    rounded_q = wp.clamp(rounded_q, -lookup_radius, lookup_radius)
-    rounded_r = wp.clamp(rounded_r, -lookup_radius, lookup_radius)
-    index = (rounded_r + lookup_radius) * lookup_diameter + rounded_q + lookup_radius
+    rounded_q = wp.clamp(rounded_q, -lookup_q_radius, lookup_q_radius)
+    rounded_r = wp.clamp(rounded_r, -lookup_r_radius, lookup_r_radius)
+    index = (rounded_r + lookup_r_radius) * lookup_q_diameter + rounded_q + lookup_q_radius
     return lookup[index]
 
 
@@ -432,8 +441,9 @@ def _mark_territory_presence(
         p.world_width,
         p.world_height,
         p.territory_tile_size,
-        p.territory_lookup_radius,
-        p.territory_lookup_diameter,
+        p.lookup_q_radius,
+        p.lookup_r_radius,
+        p.lookup_q_diameter,
     )
     territory_cell[index] = cell
     wp.atomic_add(presence, (env * 2 + team[index]) * p.territory_cells + cell, 1)
@@ -456,8 +466,9 @@ def _locate_territory(
             p.world_width,
             p.world_height,
             p.territory_tile_size,
-            p.territory_lookup_radius,
-            p.territory_lookup_diameter,
+            p.lookup_q_radius,
+            p.lookup_r_radius,
+            p.lookup_q_diameter,
         )
 
 
@@ -941,8 +952,15 @@ class GpuSimulator:
         p.bridge_width = c.bridge_width
         p.maximum_decision_steps = c.maximum_decision_steps
         p.territory_tile_size = c.territory_tile_size
-        p.territory_lookup_radius = TERRITORY_LOOKUP_RADIUS
-        p.territory_lookup_diameter = TERRITORY_LOOKUP_DIAMETER
+        p.lookup_q_radius = TERRITORY_LOOKUP_Q_RADIUS
+        p.lookup_r_radius = TERRITORY_LOOKUP_R_RADIUS
+        p.lookup_q_diameter = TERRITORY_LOOKUP_Q_DIAMETER
+        apothems = c.arena_apothems
+        p.apothem_flat = apothems[0]
+        p.apothem_slant = apothems[1]
+        slant_norm = math.sqrt(3.0 + 2.25)
+        p.slant_nx = math.sqrt(3.0) / slant_norm
+        p.slant_ny = 1.5 / slant_norm
         p.territory_cells = TERRITORY_CELLS
         p.territory_control_sigma = c.control_radius * 0.5
         p.territory_total_weight = float(TERRITORY_TOTAL_WEIGHT)

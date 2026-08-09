@@ -5,13 +5,18 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, fields
 
-from muster.sim.constants import SQRT_3, TERRITORY_RADIUS
+from muster.sim.constants import (
+    ARENA_WALL_APOTHEMS_TILES,
+    SQRT_3,
+    WORLD_HEIGHT_TILES,
+    WORLD_WIDTH_TILES,
+)
 
 @dataclass(frozen=True, slots=True)
 class Config:
     soldiers_per_team: int = 256
-    world_width: float = 60.0
-    world_height: float = 120.0 / SQRT_3
+    world_width: float = 88.5
+    world_height: float = 88.5 * WORLD_HEIGHT_TILES / WORLD_WIDTH_TILES
     soldier_radius: float = 0.42
     initial_health: float = 100.0
     decision_dt: float = 0.10
@@ -50,9 +55,11 @@ class Config:
         if self.world_width <= 2 * self.soldier_radius or self.world_height <= 2 * self.soldier_radius:
             raise ValueError("world must be larger than one soldier")
         if not math.isclose(
-            self.world_height, 2.0 * self.world_width / SQRT_3, rel_tol=1e-6
+            self.world_height,
+            self.world_width * WORLD_HEIGHT_TILES / WORLD_WIDTH_TILES,
+            rel_tol=1e-6,
         ):
-            raise ValueError("world dimensions must describe a regular point-up hexagon")
+            raise ValueError("world dimensions must match the elongated hex arena")
         if self.soldier_radius <= 0 or self.initial_health <= 0:
             raise ValueError("radius and initial health must be positive")
         if self.decision_dt <= 0 or self.physics_substeps < 1 or self.collision_iterations < 1:
@@ -110,9 +117,15 @@ class Config:
         return math.ceil(self.maximum_episode_seconds / self.decision_dt - 1e-12)
 
     @property
-    def arena_apothem(self) -> float:
-        return 0.5 * self.world_width
+    def arena_apothems(self) -> tuple[float, float, float]:
+        """Wall distances for the three point-symmetric wall pairs."""
+        size = self.territory_tile_size
+        return (
+            size * float(ARENA_WALL_APOTHEMS_TILES[0]),
+            size * float(ARENA_WALL_APOTHEMS_TILES[1]),
+            size * float(ARENA_WALL_APOTHEMS_TILES[2]),
+        )
 
     @property
     def territory_tile_size(self) -> float:
-        return self.world_width / (3 * TERRITORY_RADIUS + 2)
+        return self.world_width / WORLD_WIDTH_TILES

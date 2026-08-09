@@ -7,25 +7,26 @@ import numpy as np
 from muster.sim.config import Config
 from muster.sim.constants import (
     ARENA_NORMALS,
+    ARENA_VERTICES_TILES,
     SQRT_3,
     STRONGPOINT_CENTERS,
     TERRITORY_COORDINATES,
     TERRITORY_LOOKUP,
-    TERRITORY_LOOKUP_DIAMETER,
-    TERRITORY_LOOKUP_RADIUS,
+    TERRITORY_LOOKUP_Q_DIAMETER,
+    TERRITORY_LOOKUP_Q_RADIUS,
+    TERRITORY_LOOKUP_R_RADIUS,
 )
 
 def arena_vertices(config: Config) -> np.ndarray:
     """Return the six world-space vertices, counter-clockwise from the east."""
     center = np.array((config.world_width / 2, config.world_height / 2), np.float32)
-    radius = config.world_width / SQRT_3
-    angles = np.arange(6, dtype=np.float32) * (np.pi / 3) + np.pi / 6
-    return center + radius * np.stack((np.cos(angles), np.sin(angles)), axis=-1)
+    return center + config.territory_tile_size * ARENA_VERTICES_TILES
 
 def arena_contains(position: np.ndarray, config: Config, margin: float = 0.0) -> np.ndarray:
     """Whether points are within every wall, optionally inset by ``margin``."""
     relative = np.asarray(position) - (config.world_width / 2, config.world_height / 2)
-    return np.max(relative @ ARENA_NORMALS.T, axis=-1) <= config.arena_apothem - margin + 1e-6
+    apothems = np.tile(np.asarray(config.arena_apothems, np.float32), 2)
+    return np.max(relative @ ARENA_NORMALS.T - apothems, axis=-1) <= -margin + 1e-5
 
 def territory_centers(config: Config) -> np.ndarray:
     """World-space centers in the same compact order as territory ownership."""
@@ -60,8 +61,8 @@ def territory_indices(position: np.ndarray, config: Config) -> np.ndarray:
         selected = largest == axis
         other = [value for value in range(3) if value != axis]
         rounded[..., axis][selected] = -rounded[..., other[0]][selected] - rounded[..., other[1]][selected]
-    q = np.clip(rounded[..., 0], -TERRITORY_LOOKUP_RADIUS, TERRITORY_LOOKUP_RADIUS)
-    r = np.clip(rounded[..., 1], -TERRITORY_LOOKUP_RADIUS, TERRITORY_LOOKUP_RADIUS)
-    lookup = (r + TERRITORY_LOOKUP_RADIUS) * TERRITORY_LOOKUP_DIAMETER
-    lookup += q + TERRITORY_LOOKUP_RADIUS
+    q = np.clip(rounded[..., 0], -TERRITORY_LOOKUP_Q_RADIUS, TERRITORY_LOOKUP_Q_RADIUS)
+    r = np.clip(rounded[..., 1], -TERRITORY_LOOKUP_R_RADIUS, TERRITORY_LOOKUP_R_RADIUS)
+    lookup = (r + TERRITORY_LOOKUP_R_RADIUS) * TERRITORY_LOOKUP_Q_DIAMETER
+    lookup += q + TERRITORY_LOOKUP_Q_RADIUS
     return TERRITORY_LOOKUP[lookup]

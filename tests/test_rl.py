@@ -146,7 +146,7 @@ def test_mappo_policy_and_value_heads_are_per_soldier():
     actions, _, values, _ = policy.act(state)
     assert policy.policy_head.in_features == policy.value_head.in_features == 32
     assert policy.global_value_encoder[-1].out_features == 32
-    assert CHECKPOINT_VERSION == 12
+    assert CHECKPOINT_VERSION == 13
     assert policy.tile_encoder[0].in_features == 9
     assert policy.backbone[0].in_features == 3 * 8 + 16
     assert policy.entity_query.out_features == 16

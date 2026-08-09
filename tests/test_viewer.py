@@ -7,7 +7,7 @@ from simulator import (
     TERRITORY_CELLS,
     TERRITORY_COORDINATES,
     TERRITORY_INITIAL_OWNER,
-    TERRITORY_RADIUS,
+    TERRITORY_COLUMN_EXTENT,
     Config,
     territory_centers,
 )
@@ -91,7 +91,7 @@ def test_browser_replay_accepts_flat_hex_territory(tmp_path):
             "initial_health": config.initial_health,
             "decision_dt": config.decision_dt,
             "arena_shape": "hex",
-            "territory_radius": TERRITORY_RADIUS,
+            "territory_radius": TERRITORY_COLUMN_EXTENT,
             "territory_cells": TERRITORY_CELLS,
             "strongpoint_cells": STRONGPOINT_CELLS.tolist(),
             "strongpoint_weight": STRONGPOINT_WEIGHT,

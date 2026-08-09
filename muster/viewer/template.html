@@ -99,8 +99,10 @@ const strongpointCells=Array.isArray(cfg.strongpoint_cells)?cfg.strongpoint_cell
 const strongpointSet=new Set(strongpointCells), strongpointWeight=cfg.strongpoint_weight||1;
 const territoryTotalWeight=territoryCells+strongpointCells.length*(strongpointWeight-1);
 const territoryCellWeight=cell=>strongpointSet.has(cell)?strongpointWeight:1;
+const hexSize=cfg.hex_size||cfg.world_width/(3*hexRadius+2);
 const territoryHexes=[];
-if (hexRadius) for (let q=-hexRadius;q<=hexRadius;q++) {
+if (Array.isArray(cfg.territory_axial)) territoryHexes.push(...cfg.territory_axial);
+else if (hexRadius) for (let q=-hexRadius;q<=hexRadius;q++) {
   const first=Math.max(-hexRadius,-q-hexRadius), last=Math.min(hexRadius,-q+hexRadius);
   for (let r=first;r<=last;r++) territoryHexes.push([q,r]);
 }
@@ -185,7 +187,7 @@ function arenaPath(context,left,top,width,height) {
 
 function appendTerritoryHex(context,hex,left,top,pixelWidth,pixelHeight) {
   const q=hex[0], r=hex[1];
-  const size=cfg.world_width/(3*hexRadius+2);
+  const size=hexSize;
   const x=left+(cfg.world_width*.5+1.5*size*q)*pixelWidth/cfg.world_width;
   const y=top+pixelHeight-(cfg.world_height*.5+Math.sqrt(3)*size*(r+.5*q))*pixelHeight/cfg.world_height;
   const rx=size*pixelWidth/cfg.world_width, ry=size*pixelHeight/cfg.world_height;

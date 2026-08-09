@@ -6,7 +6,8 @@ from muster.sim.constants import (  # noqa: F401
     INFLUENCE_NEUTRAL_FIXED,
     TERRITORY_INITIAL_OWNER,
     TERRITORY_LOOKUP,
-    TERRITORY_LOOKUP_DIAMETER,
-    TERRITORY_LOOKUP_RADIUS,
+    TERRITORY_LOOKUP_Q_DIAMETER,
+    TERRITORY_LOOKUP_Q_RADIUS,
+    TERRITORY_LOOKUP_R_RADIUS,
 )
 from muster.sim import Config, CpuSimulator  # noqa: F401

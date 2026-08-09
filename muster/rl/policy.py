@@ -14,13 +14,14 @@ from muster.rl.env import LOCAL_FEATURE_SIZE, LocalState
 from muster.sim import (
     TERRITORY_CELLS,
     TERRITORY_COORDINATES,
-    TERRITORY_RADIUS,
+    TERRITORY_COLUMN_EXTENT,
+    TERRITORY_ROW_EXTENT,
     TERRITORY_WEIGHTS,
     territory_neighborhood,
 )
 
 ACTION_SIZE = 4
-CHECKPOINT_VERSION = 12
+CHECKPOINT_VERSION = 13
 ENTITY_OFFSET_SCALE = 8.0
 
 
@@ -75,8 +76,9 @@ class Policy(nn.Module):
             "cell_coordinates",
             torch.stack(
                 (
-                    coordinates[:, 0] / TERRITORY_RADIUS,
-                    (coordinates[:, 1] + 0.5 * coordinates[:, 0]) / TERRITORY_RADIUS,
+                    coordinates[:, 0] / TERRITORY_COLUMN_EXTENT,
+                    (coordinates[:, 1] + 0.5 * coordinates[:, 0])
+                    / (TERRITORY_ROW_EXTENT + 0.5),
                 ),
                 dim=-1,
             ),

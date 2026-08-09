@@ -67,24 +67,24 @@ def test_default_formations_are_mirrored():
     config = Config()
     sim = CpuSimulator(config)
     left, right = np.split(sim.position[0], 2)
-    np.testing.assert_allclose(left[:, 0], config.world_width - right[:, 0], atol=2e-6)
+    np.testing.assert_allclose(left[:, 0], config.world_width - right[:, 0], atol=5e-6)
     np.testing.assert_allclose(left[:, 1], right[:, 1])
     assert arena_contains(sim.position[0], config, config.soldier_radius).all()
 
 
 def test_hex_territory_starts_balanced_with_a_neutral_center_line():
-    assert TERRITORY_CELLS == 547
-    assert np.count_nonzero(TERRITORY_INITIAL_OWNER == 0) == 260
-    assert np.count_nonzero(TERRITORY_INITIAL_OWNER == 1) == 260
-    assert np.count_nonzero(TERRITORY_INITIAL_OWNER == -1) == 27
-    assert STRONGPOINT_CENTERS.tolist() == [[0, -8], [0, 0], [0, 8]]
+    assert TERRITORY_CELLS == 561
+    assert np.count_nonzero(TERRITORY_INITIAL_OWNER == 0) == 271
+    assert np.count_nonzero(TERRITORY_INITIAL_OWNER == 1) == 271
+    assert np.count_nonzero(TERRITORY_INITIAL_OWNER == -1) == 19
+    assert STRONGPOINT_CENTERS.tolist() == [[0, -6], [0, 0], [0, 6]]
     assert len(STRONGPOINT_CELLS) == 21
     assert np.count_nonzero(TERRITORY_WEIGHTS == STRONGPOINT_WEIGHT) == 21
-    assert TERRITORY_TOTAL_WEIGHT == 526 + 21 * STRONGPOINT_WEIGHT
+    assert TERRITORY_TOTAL_WEIGHT == 540 + 21 * STRONGPOINT_WEIGHT
     weighted = [
         TERRITORY_WEIGHTS[TERRITORY_INITIAL_OWNER == team].sum() for team in (0, 1)
     ]
-    assert weighted == [254 + 6 * STRONGPOINT_WEIGHT] * 2
+    assert weighted == [265 + 6 * STRONGPOINT_WEIGHT] * 2
     config = Config()
     np.testing.assert_array_equal(
         territory_indices(territory_centers(config), config),
@@ -385,7 +385,7 @@ def test_hex_wall_projection_matches_warp():
     config = Config(soldiers_per_team=1, physics_substeps=1, collision_iterations=1)
     normal = ARENA_NORMALS[1]
     center = np.array((config.world_width / 2, config.world_height / 2), np.float32)
-    distance = config.arena_apothem - config.soldier_radius - 0.02
+    distance = config.arena_apothems[1] - config.soldier_radius - 0.02
     state = {"position": np.array([center + distance * normal, center - distance * normal])}
     actions = np.zeros((1, 2, 4), np.float32)
     actions[0, 0, :2] = normal

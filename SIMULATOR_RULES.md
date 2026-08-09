@@ -2,7 +2,7 @@
 
 Status: normative specification for the current simulator implementation
 
-Version: 0.9
+Version: 0.10
 
 Scope: world dynamics, collisions, combat, terrain, and episode termination
 
@@ -514,8 +514,15 @@ collision, or random damage roll in version 0.3.
 
 ## 15. Episode termination
 
-The battlefield is tiled by a radius-13 axial hex grid containing 547
-territory cells. Control is a pure function of present force, computed as a
+The battlefield is an elongated hexagon (version 0.10; earlier versions
+used a regular radius-13 hexagon of 547 cells): flat north and south
+walls, tapering to points at the east and west ends, with the long axis
+as the attack axis. Cells sit at axial coordinates with columns
+`|q| <= 19` and rows `|r + q/2| <= min(9.5, 20 - |q|) - 0.5`, giving 39
+columns, 19 rows at the waist, and 561 territory cells. The world spans
+59 x 19*sqrt(3) tile sizes (88.5 x 49.36 world units at the default tile
+size of 1.5); armies spawn mirrored at 25% and 75% of the width,
+~44 units apart. Control is a pure function of present force, computed as a
 soft influence field after every decision step. Each living soldier
 contributes `(h / H)^2 * exp(-0.5 * (d / sigma)^2)` influence to every
 cell, where `d` is the distance from the soldier's center to the cell
@@ -544,9 +551,9 @@ ownership constant survives only as the pre-first-step reset value shown at
 frame zero, and control shares are zero until the first step.)
 
 Three non-overlapping radius-1 strongpoints are centered at axial coordinates
-`(0, -8)`, `(0, 0)`, and `(0, 8)`. Each contains seven tiles. Every strongpoint
+`(0, -6)`, `(0, 0)`, and `(0, 6)`. Each contains seven tiles. Every strongpoint
 tile has territory weight `90` (raised from `30` in version 0.9); every other
-tile has weight `1`, for a total territory weight of `2416`. Strongpoints
+tile has weight `1`, for a total territory weight of `2430`. Strongpoints
 therefore carry ~78% of the score: holding the contested center decisively
 outweighs out-spreading an opponent, so territory can no longer be won while
 avoiding contact. (Measured at weight 30, a scripted strongpoint-seeking

@@ -17,7 +17,8 @@ from muster.sim.constants import (
     STRONGPOINT_CELLS,
     STRONGPOINT_WEIGHT,
     TERRITORY_CELLS,
-    TERRITORY_RADIUS,
+    TERRITORY_COLUMN_EXTENT,
+    TERRITORY_COORDINATES,
 )
 
 _REPLAY_HTML = (Path(__file__).parent / "template.html").read_text(encoding="utf-8")
@@ -112,7 +113,9 @@ def record_episode(simulator: object, policy: Policy | None = None) -> dict[str,
             "river_width": config.river_width,
             "bridge_width": config.bridge_width,
             "arena_shape": "hex",
-            "territory_radius": TERRITORY_RADIUS,
+            "territory_radius": TERRITORY_COLUMN_EXTENT,
+            "territory_axial": TERRITORY_COORDINATES.tolist(),
+            "hex_size": config.territory_tile_size,
             "territory_cells": TERRITORY_CELLS,
             "strongpoint_cells": STRONGPOINT_CELLS.tolist(),
             "strongpoint_weight": STRONGPOINT_WEIGHT,

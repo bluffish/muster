@@ -1,4 +1,11 @@
-"""Territory geometry constants and the hex lookup tables."""
+"""Territory geometry constants and the hex lookup tables.
+
+Since rules 0.10 the arena is an elongated hexagon: flat north/south walls,
+tapering to points at the east and west ends. The long axis is the attack
+axis. Cells live at axial coordinates ``(q, r)`` with ``|q| <= 19`` columns
+and vertical extent ``|r + q/2| <= min(9.5, 20 - |q|) - 0.5`` rows, giving
+flat rows for ``|q| <= 10`` and one-row-per-column tapers to the points.
+"""
 
 from __future__ import annotations
 
@@ -8,23 +15,30 @@ import numpy as np
 
 SQRT_3 = math.sqrt(3.0)
 
-ARENA_NORMALS = np.array(
-    [(math.cos(i * math.pi / 3), math.sin(i * math.pi / 3)) for i in range(6)],
-    np.float32,
-)
+# Lattice shape: columns span [-TERRITORY_COLUMN_EXTENT, +TERRITORY_COLUMN_EXTENT];
+# the widest columns hold rows |r + q/2| <= TERRITORY_ROW_EXTENT.
+TERRITORY_COLUMN_EXTENT = 19
+TERRITORY_ROW_EXTENT = 9
 
-TERRITORY_RADIUS = 13
+# World size in tile units: x spans (3 * columns + 2) / 2 tile sizes per side,
+# y spans sqrt(3) * (rows + 0.5) per side.
+WORLD_WIDTH_TILES = 3.0 * TERRITORY_COLUMN_EXTENT + 2.0
+WORLD_HEIGHT_TILES = SQRT_3 * (2.0 * TERRITORY_ROW_EXTENT + 1.0)
 
-TERRITORY_DIAMETER = 2 * TERRITORY_RADIUS + 1
+
+def _row_half_extent(q: int) -> float:
+    return min(
+        TERRITORY_ROW_EXTENT + 0.5,
+        TERRITORY_COLUMN_EXTENT + 1 - abs(q),
+    ) - 0.5
+
 
 TERRITORY_COORDINATES = np.array(
     [
         (q, r)
-        for q in range(-TERRITORY_RADIUS, TERRITORY_RADIUS + 1)
-        for r in range(
-            max(-TERRITORY_RADIUS, -q - TERRITORY_RADIUS),
-            min(TERRITORY_RADIUS, -q + TERRITORY_RADIUS) + 1,
-        )
+        for q in range(-TERRITORY_COLUMN_EXTENT, TERRITORY_COLUMN_EXTENT + 1)
+        for r in range(-TERRITORY_COLUMN_EXTENT * 2, TERRITORY_COLUMN_EXTENT * 2 + 1)
+        if abs(r + q / 2.0) <= _row_half_extent(q) + 1e-9
     ],
     np.int32,
 )
@@ -37,7 +51,7 @@ TERRITORY_INITIAL_OWNER = np.where(
     np.where(TERRITORY_COORDINATES[:, 0] > 0, 1, -1),
 ).astype(np.int32)
 
-STRONGPOINT_CENTERS = np.array(((0, -8), (0, 0), (0, 8)), np.int32)
+STRONGPOINT_CENTERS = np.array(((0, -6), (0, 0), (0, 6)), np.int32)
 
 STRONGPOINT_RADIUS = 1
 
@@ -61,6 +75,76 @@ TERRITORY_WEIGHTS = np.where(STRONGPOINT_MASK, STRONGPOINT_WEIGHT, 1).astype(np.
 
 TERRITORY_TOTAL_WEIGHT = int(TERRITORY_WEIGHTS.sum())
 
+# Arena walls: three point-symmetric pairs. Normals point outward for the
+# positive member of each pair; the negative member mirrors through the
+# center. Apothems are in tile-size units, computed as the support of the
+# union of cell hexagons (cell center plus corner) in each normal direction.
+_slant = np.array((SQRT_3, 1.5), np.float64)
+_slant /= np.linalg.norm(_slant)
+ARENA_NORMALS = np.array(
+    [
+        (0.0, 1.0),
+        (_slant[0], _slant[1]),
+        (-_slant[0], _slant[1]),
+        (0.0, -1.0),
+        (-_slant[0], -_slant[1]),
+        (_slant[0], -_slant[1]),
+    ],
+    np.float32,
+)
+
+_cell_centers_tiles = np.stack(
+    (
+        1.5 * TERRITORY_COORDINATES[:, 0].astype(np.float64),
+        SQRT_3
+        * (
+            TERRITORY_COORDINATES[:, 1].astype(np.float64)
+            + 0.5 * TERRITORY_COORDINATES[:, 0].astype(np.float64)
+        ),
+    ),
+    axis=-1,
+)
+
+_corner_angles = np.arange(6) * (math.pi / 3.0)
+_cell_corners_tiles = np.stack(
+    (np.cos(_corner_angles), np.sin(_corner_angles)), axis=-1
+)
+
+_support_points = (
+    _cell_centers_tiles[:, None, :] + _cell_corners_tiles[None, :, :]
+).reshape(-1, 2)
+
+ARENA_WALL_APOTHEMS_TILES = np.max(
+    _support_points @ ARENA_NORMALS[:3].T.astype(np.float64), axis=0
+).astype(np.float32)
+
+def _wall_intersection(first: int, second: int) -> tuple[float, float]:
+    normals = np.array(
+        [ARENA_NORMALS[first], ARENA_NORMALS[second]], np.float64
+    )
+    apothems = np.array(
+        [
+            ARENA_WALL_APOTHEMS_TILES[first % 3],
+            ARENA_WALL_APOTHEMS_TILES[second % 3],
+        ],
+        np.float64,
+    )
+    return tuple(np.linalg.solve(normals, apothems))
+
+
+# Counter-clockwise from the east point: the six wall-line intersections.
+ARENA_VERTICES_TILES = np.array(
+    [
+        _wall_intersection(1, 5),  # east point (NE slant meets SE slant)
+        _wall_intersection(0, 1),  # northeast (top meets NE slant)
+        _wall_intersection(0, 2),  # northwest (top meets NW slant)
+        _wall_intersection(2, 4),  # west point
+        _wall_intersection(3, 4),  # southwest
+        _wall_intersection(3, 5),  # southeast
+    ],
+    np.float32,
+)
+
 # Influence contributions are quantized to fixed point before summation so
 # control is exactly independent of soldier iteration order.
 INFLUENCE_FIXED_SCALE = 1 << 20
@@ -71,17 +155,21 @@ ENTITY_RADIUS = 5.0
 
 INFLUENCE_NEUTRAL_FIXED = INFLUENCE_FIXED_SCALE >> 3  # kappa = 0.125
 
-# Rounded axial coordinates can be one cell beyond the board near the six walls.
-# This tiny table maps those coordinates to the closest valid territory cell.
-TERRITORY_LOOKUP_RADIUS = TERRITORY_RADIUS + 2
+# Rounded axial coordinates can be a cell or two beyond the board near the
+# walls. This table maps any nearby coordinate to the closest valid cell.
+TERRITORY_LOOKUP_Q_RADIUS = TERRITORY_COLUMN_EXTENT + 2
 
-TERRITORY_LOOKUP_DIAMETER = 2 * TERRITORY_LOOKUP_RADIUS + 1
+TERRITORY_LOOKUP_R_RADIUS = int(np.max(np.abs(TERRITORY_COORDINATES[:, 1]))) + 2
+
+TERRITORY_LOOKUP_Q_DIAMETER = 2 * TERRITORY_LOOKUP_Q_RADIUS + 1
+
+TERRITORY_LOOKUP_R_DIAMETER = 2 * TERRITORY_LOOKUP_R_RADIUS + 1
 
 _lookup_coordinates = np.array(
     [
         (q, r)
-        for r in range(-TERRITORY_LOOKUP_RADIUS, TERRITORY_LOOKUP_RADIUS + 1)
-        for q in range(-TERRITORY_LOOKUP_RADIUS, TERRITORY_LOOKUP_RADIUS + 1)
+        for r in range(-TERRITORY_LOOKUP_R_RADIUS, TERRITORY_LOOKUP_R_RADIUS + 1)
+        for q in range(-TERRITORY_LOOKUP_Q_RADIUS, TERRITORY_LOOKUP_Q_RADIUS + 1)
     ],
     np.float32,
 )

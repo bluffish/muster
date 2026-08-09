@@ -111,7 +111,9 @@ class CpuSimulator:
         )
         position = np.empty((self.num_soldiers, 2), np.float32)
         position[:n] = formation + (c.world_width * 0.25, c.world_height * 0.5)
-        position[n:] = formation * (-1, 1) + (c.world_width * 0.75, c.world_height * 0.5)
+        # Mirror the left formation exactly so the sides are float-identical.
+        position[n:, 0] = np.float32(c.world_width) - position[:n, 0]
+        position[n:, 1] = position[:n, 1]
         if not np.all(arena_contains(position, c, c.soldier_radius)):
             raise ValueError("default formations do not fit in the configured world")
         if np.max(position[:n, 0]) + c.diameter > np.min(position[n:, 0]):
@@ -181,9 +183,10 @@ class CpuSimulator:
         p, v = self.position[env], self.velocity[env]
         r = c.soldier_radius
         center = np.array((c.world_width / 2, c.world_height / 2), np.float32)
-        limit = c.arena_apothem - r
+        apothems = c.arena_apothems
         for _ in range(2):
-            for axis in ARENA_NORMALS[:3]:
+            for axis, apothem in zip(ARENA_NORMALS[:3], apothems, strict=True):
+                limit = apothem - r
                 signed_distance = (p - center) @ axis
                 normal = np.where(signed_distance[:, None] < 0, -axis, axis)
                 distance = np.abs(signed_distance) - limit
