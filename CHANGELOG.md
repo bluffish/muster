@@ -4,7 +4,7 @@ Version history of the training stack and game rules. Each run's exact flags
 are preserved in its checkpoint (`train_args`) and in git history.
 
 ## v20 — charger-seeded pure self-play (current)
-Fresh run (`local-hex-v20-charger-selfplay-v1`) warm-started from
+Fresh run (`local-hex-v20-charger-selfplay-v2`) warm-started from
 `distilled_charger.pt`: a behavior clone of a perception-limited charger
 (attack the nearest enemy within visual radius 5, otherwise march on the
 nearest strongpoint; move-direction cosine 0.98 to the teacher). Pure pool
@@ -15,6 +15,11 @@ distilled charger while it kept 99.8% HP. Initializing inside the
 aggressive basin makes self-play refine fighting instead of avoiding it.
 Critic and value pathways start untrained (BC touched only the actor), so
 early updates run on noisy advantages; target-KL 0.02 bounds the damage.
+The -v1 launch was scrapped after ~30 updates: its distillation had only
+ever seen mode 0 (a probe-harness env defaulted mode_count=1), so under
+the run's uniform 0-15 mode sampling the untrained mode embeddings cut
+combat intensity 4.5x (rollout damage 2.4k vs 11.3k mode-0-pinned). -v2
+re-distills with modes sampled across the full range.
 
 ## v19.2 — entropy control
 Entropy coefficient 0.003 -> 0.0005 and log_std ceiling +1 -> 0. With the
