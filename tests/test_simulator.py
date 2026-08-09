@@ -277,6 +277,22 @@ def test_control_requires_presence_and_equidistance_contests():
     sim.step(actions)
     assert sim.territory_owner[0, cell] == -1
 
+    # A wounded soldier loses an equidistant contest to a healthy one, and
+    # projects quadratically less control than at full health.
+    sim.reset(
+        {
+            "position": flanking,
+            "health": np.array([100.0, 50.0], np.float32),
+        }
+    )
+    sim.step(actions)
+    assert sim.territory_owner[0, cell] == 0
+    wounded_share = sim.control_share[0, cell, 1]
+    sim.reset({"position": flanking})
+    sim.step(actions)
+    healthy_share = sim.control_share[0, cell, 1]
+    assert wounded_share < 0.5 * healthy_share
+
     # Mutual extinction leaves the whole field neutral.
     sim.reset(
         {

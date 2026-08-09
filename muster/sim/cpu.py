@@ -422,16 +422,19 @@ class CpuSimulator:
             self.substep_count[env] += 1
 
     def _update_territory(self) -> None:
-        """Soft influence control with order-invariant fixed-point summation.
+        """Health-weighted soft influence with order-invariant summation.
 
-        Each living soldier contributes ``exp(-0.5 (d / sigma)^2)`` influence
-        to every cell, with ``sigma = control_radius / 2``, quantized to
-        ``INFLUENCE_FIXED_SCALE``. A team's control share is its influence
-        over the total plus the neutral mass ``kappa``: scoring requires
-        presence, and unreached ground stays neutral. A cell displays as
-        owned when a share exceeds one half.
+        Each living soldier contributes ``(h / H)^2 exp(-0.5 (d / sigma)^2)``
+        influence to every cell, with ``h`` its current health, ``H`` the
+        initial health, and ``sigma = control_radius / 2``, quantized to
+        ``INFLUENCE_FIXED_SCALE``. Wounded soldiers project quadratically
+        less control. A team's control share is its influence over the total
+        plus the neutral mass ``kappa``: scoring requires presence, and
+        unreached ground stays neutral. A cell displays as owned when a
+        share exceeds one half.
         """
         sigma = np.float32(self.config.control_radius * 0.5)
+        initial_health = np.float32(self.config.initial_health)
         for env in np.flatnonzero(~self.done):
             fixed = np.zeros((2, TERRITORY_CELLS), np.int64)
             living = np.flatnonzero(self.alive[env])
@@ -443,9 +446,17 @@ class CpuSimulator:
                         - self.position[env, members][None, :, :]
                     ).astype(np.float32)
                     squared = (deltas**2).sum(-1)
-                    influence = np.exp(
-                        np.float32(-0.5) * squared / (sigma * sigma)
-                    ).astype(np.float32)
+                    weight = np.minimum(
+                        self.health[env, members].astype(np.float32) / initial_health,
+                        np.float32(1.0),
+                    )
+                    influence = (
+                        np.exp(np.float32(-0.5) * squared / (sigma * sigma)).astype(
+                            np.float32
+                        )
+                        * weight[None, :]
+                        * weight[None, :]
+                    )
                     fixed[team] = (
                         np.floor(influence * INFLUENCE_FIXED_SCALE + 0.5)
                         .astype(np.int64)

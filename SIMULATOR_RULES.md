@@ -2,7 +2,7 @@
 
 Status: normative specification for the current simulator implementation
 
-Version: 0.7
+Version: 0.8
 
 Scope: world dynamics, collisions, combat, terrain, and episode termination
 
@@ -517,11 +517,15 @@ collision, or random damage roll in version 0.3.
 The battlefield is tiled by a radius-13 axial hex grid containing 547
 territory cells. Control is a pure function of present force, computed as a
 soft influence field after every decision step. Each living soldier
-contributes `exp(-0.5 * (d / sigma)^2)` influence to every cell, where `d`
-is the distance from the soldier's center to the cell center and
-`sigma = control_radius / 2`. Contributions are quantized to
-`1 / 2^20` fixed-point units before summation so control is exactly
-independent of soldier iteration order. With `I_0` and `I_1` the teams'
+contributes `(h / H)^2 * exp(-0.5 * (d / sigma)^2)` influence to every
+cell, where `d` is the distance from the soldier's center to the cell
+center, `sigma = control_radius / 2`, `h` is the soldier's current health,
+and `H` is the initial health. The quadratic health weight (added in
+version 0.8) makes wounded soldiers project sharply less control — a
+soldier at half health projects one quarter — so damage dealt moves the
+score continuously instead of only at the kill threshold. Contributions
+are quantized to `1 / 2^20` fixed-point units before summation so control
+is exactly independent of soldier iteration order. With `I_0` and `I_1` the teams'
 summed influences on a cell, the control shares are
 
 ```text

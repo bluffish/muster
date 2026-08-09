@@ -3,7 +3,16 @@
 Version history of the training stack and game rules. Each run's exact flags
 are preserved in its checkpoint (`train_args`) and in git history.
 
-## v19 — score-aware presence game (rules 0.7, current)
+## v19.1 — health-weighted influence (rules 0.8, current)
+Wounded soldiers project quadratically less control: influence is now
+`(h / H)^2 * exp(-0.5 (d / sigma)^2)`. Motivated by the measured
+nonconfrontational self-play equilibrium (pool episodes ended with 0.5%
+total HP lost while armies split the map): under all-or-nothing influence,
+damage only paid at the kill threshold, so combat was gradient-flat. Now
+every point of damage moves the dense advantage reward both teams already
+optimize — combat pays continuously, with no new reward channel.
+
+## v19 — score-aware presence game (rules 0.7)
 Presence scoring restored (v17's kappa rule) after v18's full allocation
 measurably subsidized huddling. Added score observability: features 11/12
 give every soldier its team's current signed control advantage and the

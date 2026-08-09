@@ -10,7 +10,7 @@ remote=ubuntu@52.90.113.210
 identity=/root/.ssh/id_ed25519
 ```
 
-Game rules live in `SIMULATOR_RULES.md` (version 0.7: soft influence
+Game rules live in `SIMULATOR_RULES.md` (version 0.8: health-weighted soft influence
 control with presence requirement, time-integral scoring, score
 observability). Version history and the reasoning behind each change:
 `CHANGELOG.md`.

@@ -65,6 +65,7 @@ class _Params:
     territory_cells: int
     territory_control_sigma: float
     territory_total_weight: float
+    initial_health: float
 
 
 @wp.func
@@ -464,6 +465,7 @@ def _locate_territory(
 def _control_territory_owner(
     position: wp.array(dtype=wp.vec2),
     alive: wp.array(dtype=wp.int32),
+    health: wp.array(dtype=float),
     team: wp.array(dtype=wp.int32),
     done: wp.array(dtype=wp.int32),
     centers: wp.array(dtype=wp.vec2),
@@ -471,7 +473,7 @@ def _control_territory_owner(
     share: wp.array(dtype=float),
     p: _Params,
 ):
-    """Soft influence control with order-invariant fixed-point summation."""
+    """Health-weighted soft influence with order-invariant fixed-point summation."""
     index = wp.tid()
     env = index // p.territory_cells
     if done[env] != 0:
@@ -486,8 +488,11 @@ def _control_territory_owner(
         soldier = base + local
         if alive[soldier] == 0:
             continue
+        weight = health[soldier] / p.initial_health
+        if weight > 1.0:
+            weight = 1.0
         delta = position[soldier] - center
-        influence = wp.exp(wp.dot(delta, delta) * scale)
+        influence = wp.exp(wp.dot(delta, delta) * scale) * weight * weight
         quantized = int(wp.floor(influence * float(INFLUENCE_FIXED_SCALE) + 0.5))
         if team[soldier] == 0:
             fixed_0 += quantized
@@ -941,6 +946,7 @@ class GpuSimulator:
         p.territory_cells = TERRITORY_CELLS
         p.territory_control_sigma = c.control_radius * 0.5
         p.territory_total_weight = float(TERRITORY_TOTAL_WEIGHT)
+        p.initial_health = c.initial_health
         return p
 
     @property
@@ -1301,6 +1307,7 @@ class GpuSimulator:
             inputs=[
                 self.position,
                 self.alive,
+                self.health,
                 self.team,
                 self.done,
                 self._territory_centers,
