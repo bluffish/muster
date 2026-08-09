@@ -3,7 +3,21 @@
 Version history of the training stack and game rules. Each run's exact flags
 are preserved in its checkpoint (`train_args`) and in git history.
 
-## v20 — charger-seeded pure self-play (current)
+## v20.1 — strongpoint scarcity (rules 0.9, current)
+`STRONGPOINT_WEIGHT` 30 -> 90 (strongpoints now ~62% of total score);
+run `local-hex-v20-charger-selfplay-v3` restarts charger-seeded pure
+self-play under the new rules. The v2 run proved the deeper problem was
+the game, not the learning: seeded fully aggressive, self-play de-escalated
+from 15.8k damage/episode to 61 in 41 updates — correctly, because a fair
+perception-limited charger lost 26/32 head-to-heads against a dispersal
+policy at weight 30. Coverage outpriced combat, so combat was unlearned.
+A weight sweep (30/60/90/120/180) showed the charger's mean control
+advantage rising to +0.25 and plateauing at 90; win rate ~47% with the
+naive chaser being kiteable off its points, which leaves exactly the
+skill margin RL should exploit. Now holding the contested center beats
+out-spreading, and the only counter to a camper is assault.
+
+## v20 — charger-seeded pure self-play
 Fresh run (`local-hex-v20-charger-selfplay-v2`) warm-started from
 `distilled_charger.pt`: a behavior clone of a perception-limited charger
 (attack the nearest enemy within visual radius 5, otherwise march on the
