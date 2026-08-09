@@ -1392,17 +1392,24 @@ def main() -> None:
     policy = Policy(**model_kwargs).to(device)
     policy.use_bf16 = args.dtype == "bf16"
     optimizer = torch.optim.Adam(policy.parameters(), lr=args.learning_rate, eps=1e-5)
+    def _restore_optimizer(state: dict[str, object]) -> None:
+        # load_state_dict restores the checkpointed hyperparameters, which
+        # would silently override a changed --learning-rate on resume.
+        optimizer.load_state_dict(state)
+        for group in optimizer.param_groups:
+            group["lr"] = args.learning_rate
+
     first_update = 1
     if checkpoint is not None:
         policy.load_state_dict(checkpoint["model"])
-        optimizer.load_state_dict(checkpoint["optimizer"])
+        _restore_optimizer(checkpoint["optimizer"])
         torch.set_rng_state(checkpoint["torch_rng"].cpu())
         if device.type == "cuda" and "cuda_rng" in checkpoint:
             torch.cuda.set_rng_state(checkpoint["cuda_rng"].cpu(), device)
         first_update = int(checkpoint["update"]) + 1
     elif warm is not None:
         policy.load_state_dict(warm["model"])
-        optimizer.load_state_dict(warm["optimizer"])
+        _restore_optimizer(warm["optimizer"])
         if args.reset_log_std:
             with torch.no_grad():
                 policy.log_std.fill_(-0.5)
