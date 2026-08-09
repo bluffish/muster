@@ -1,0 +1,12 @@
+[Unit]
+Description=Archive Muster v19 score-aware presence replays every 10 seconds
+
+[Timer]
+OnBootSec=15s
+OnUnitActiveSec=10s
+AccuracySec=2s
+Persistent=true
+Unit=muster-v19-replay-archive.service
+
+[Install]
+WantedBy=timers.target

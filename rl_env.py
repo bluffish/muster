@@ -30,6 +30,8 @@ LOCAL_FEATURE_NAMES = (
     "global_x",
     "global_y",
     "time_remaining",
+    "score_advantage",
+    "score_integral",
 )
 LOCAL_FEATURE_SIZE = len(LOCAL_FEATURE_NAMES)
 
@@ -236,6 +238,8 @@ def _observe_local(
     alive: wp.array(dtype=wp.int32),
     attack_cooldown: wp.array(dtype=wp.int32),
     step_count: wp.array(dtype=wp.int32),
+    territory: wp.array(dtype=float),
+    advantage_integral: wp.array(dtype=float),
     vertical_sign: wp.array(dtype=float),
     territory_cell: wp.array(dtype=wp.int32),
     centers: wp.array(dtype=wp.vec2),
@@ -289,6 +293,23 @@ def _observe_local(
             1.0
             - float(step_count[env]) / float(wp.max(p.maximum_decision_steps, 1)),
         ),
+    )
+    team_sign = float(1.0)
+    if team[index] == 1:
+        team_sign = -1.0
+    _store_feature(
+        features,
+        index,
+        11,
+        team_sign * (territory[env * 2] - territory[env * 2 + 1]),
+    )
+    _store_feature(
+        features,
+        index,
+        12,
+        team_sign
+        * advantage_integral[env]
+        / float(wp.max(p.maximum_decision_steps, 1)),
     )
 
 
@@ -565,6 +586,8 @@ class RLEnv:
                 self.sim.alive,
                 self.sim.attack_cooldown_ticks,
                 self.sim.step_count,
+                self._territory,
+                self.sim.advantage_integral,
                 self._vertical_sign,
                 self.sim.territory_cell,
                 self._centers,

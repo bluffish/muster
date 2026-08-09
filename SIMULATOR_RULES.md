@@ -2,7 +2,7 @@
 
 Status: normative specification for the current simulator implementation
 
-Version: 0.6
+Version: 0.7
 
 Scope: world dynamics, collisions, combat, terrain, and episode termination
 
@@ -515,29 +515,29 @@ collision, or random damage roll in version 0.3.
 ## 15. Episode termination
 
 The battlefield is tiled by a radius-13 axial hex grid containing 547
-territory cells. Control is relative force projection: every cell is
-allocated between the teams by the ratio of the influence they project onto
-it. Each living soldier radiates `exp(-0.5 * (d / sigma)^2)` with
-`sigma = control_radius / 2`, and a cell's shares are
+territory cells. Control is a pure function of present force, computed as a
+soft influence field after every decision step. Each living soldier
+contributes `exp(-0.5 * (d / sigma)^2)` influence to every cell, where `d`
+is the distance from the soldier's center to the cell center and
+`sigma = control_radius / 2`. Contributions are quantized to
+`1 / 2^20` fixed-point units before summation so control is exactly
+independent of soldier iteration order. With `I_0` and `I_1` the teams'
+summed influences on a cell, the control shares are
 
 ```text
-share_t = I_t / (I_0 + I_1)
+share_t = I_t / (I_0 + I_1 + kappa)        kappa = 0.125
 ```
 
-computed per team in the log domain: the nearest-soldier term is factored
-out exactly, and the remaining max-shifted terms are quantized to `1 / 2^20`
-fixed point before summation, so control is exactly independent of soldier
-iteration order and distant fields never underflow. The whole map is always
-allocated: ground both armies are far from belongs, softly, to whichever
-would reach it first, so an encircled or cornered army holds only its
-pocket while its opponent commands everything else. A team with no living
-soldiers projects nothing (the survivor's share is one everywhere); with
-both teams extinct, every cell splits evenly. Control is never remembered:
-shares are recomputed from living positions every step. The ternary owner
-used for display and local observations is the team whose share exceeds
-`0.6`; the band between is contested. (The initial symmetric ownership
-constant survives only as the pre-first-step reset value shown at frame
-zero, and control shares are zero until the first step.)
+so scoring requires presence: unreached ground remains neutral mass, and a
+lone soldier standing on a cell holds about 89% of it. (Version 0.6 briefly
+allocated the whole map by pure influence ratio; it subsidized huddled
+armies whose hinterland required no presence, and was withdrawn.) Scoring
+uses the continuous shares; the ternary owner used for display and local
+observations is the team whose share exceeds one half, otherwise unowned.
+Dead soldiers contribute nothing, and control is never remembered: shares
+are recomputed from living positions every step. (The initial symmetric
+ownership constant survives only as the pre-first-step reset value shown at
+frame zero, and control shares are zero until the first step.)
 
 Three non-overlapping radius-1 strongpoints are centered at axial coordinates
 `(0, -8)`, `(0, 0)`, and `(0, 8)`. Each contains seven tiles. Every strongpoint
@@ -648,11 +648,13 @@ Before optimization, a new implementation should pass at least these cases:
     the result.
 14. **Weighted control:** a soldier holding the center strongpoint cluster
     outscores an opponent holding a similar-sized disc of plain tiles.
-15. **Projection control:** equidistant opposing soldiers contest a cell; a
-    relatively nearer soldier owns it at any range; a team's death hands its
-    entire field to the survivor the same step; mutual extinction splits
-    every cell evenly; and the fixed-point log-domain sums make the result
-    independent of soldier order.
+15. **Influence control:** equidistant opposing soldiers split a cell below
+    the ownership threshold; a sole nearby soldier majority-owns it; moving
+    far away or dying releases it to neutral the same step, and the
+    fixed-point sums make the result independent of soldier order.
+16. **Score observability:** every soldier's observation carries its team's
+    current signed control advantage and the banked advantage integral as
+    fractions of the episode, negated in the enemy-relative view.
 
 ## 19. Explicit non-goals for version 0.3
 

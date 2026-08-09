@@ -73,11 +73,9 @@ def test_presence_control_is_symmetric_and_in_local_state():
     assert (occupied_owner == 0).all()
     enemy_owner = state.owners[0].gather(0, state.cells[0, 1].long())
     assert (enemy_owner == 1).all()
-    # The map is fully allocated between the two projections.
-    total = (facts["territory"][0, 0] + facts["territory"][0, 1]).item()
-    assert abs(total - 1.0) < 1e-3
-    assert facts["territory"][0, 0] > facts["territory"][0, 1] > 0
-    del expected_fraction
+    # Presence scoring: each team holds only its projection bubbles.
+    assert 0 < float(facts["territory"][0, 0]) < expected_fraction
+    assert 0 < float(facts["territory"][0, 1]) < expected_fraction
     expected_delta = facts["territory"].detach().cpu() - initial_territory
     torch.testing.assert_close(facts["territory_delta"].detach().cpu(), expected_delta)
 
@@ -148,7 +146,7 @@ def test_mappo_policy_and_value_heads_are_per_soldier():
     actions, _, values, _ = policy.act(state)
     assert policy.policy_head.in_features == policy.value_head.in_features == 32
     assert policy.global_value_encoder[-1].out_features == 32
-    assert CHECKPOINT_VERSION == 11
+    assert CHECKPOINT_VERSION == 12
     assert policy.tile_encoder[0].in_features == 9
     assert policy.backbone[0].in_features == 3 * 8 + 16
     assert policy.entity_query.out_features == 16
@@ -174,8 +172,8 @@ def test_vertical_mirror_augmentation_is_paired():
         -state.features[0, :, :, [1, 3, 5, 9]],
     )
     torch.testing.assert_close(
-        state.features[2, :, :, [0, 2, 4, 6, 7, 8, 10]],
-        state.features[0, :, :, [0, 2, 4, 6, 7, 8, 10]],
+        state.features[2, :, :, [0, 2, 4, 6, 7, 8, 10, 11, 12]],
+        state.features[0, :, :, [0, 2, 4, 6, 7, 8, 10, 11, 12]],
     )
     assert (state.features[..., 8:10].abs() <= 1).all()
     positions = wp.to_torch(env.sim.position).view(4, 2, 4, 2)
@@ -349,6 +347,8 @@ def test_local_feature_contract_includes_canonical_global_position():
         "global_x",
         "global_y",
         "time_remaining",
+        "score_advantage",
+        "score_integral",
     )
 
 
@@ -1137,3 +1137,34 @@ def test_sequence_evaluation_reproduces_collection_log_probs():
             torch.testing.assert_close(
                 value[alive], rollout["value"][step][alive], rtol=1e-3, atol=1e-4
             )
+
+
+def test_score_features_are_own_signed_and_accumulate():
+    torch = pytest.importorskip("torch")
+    wp = pytest.importorskip("warp")
+    from rl_env import RLEnv
+    from simulator import TERRITORY_COORDINATES, Config, territory_centers
+
+    device = "cuda" if torch.cuda.is_available() and wp.is_cuda_available() else "cpu"
+    config = Config(soldiers_per_team=1, maximum_episode_seconds=0.4)
+    cell = {tuple(value): index for index, value in enumerate(TERRITORY_COORDINATES)}
+    centers = territory_centers(config)
+    env = RLEnv(config, device=device)
+    env.sim.reset({"position": centers[[cell[(1, 0)], cell[(10, 0)]]]})
+    env.observe()
+    actions = torch.zeros((1, 2, 1, 4), device=env.device)
+
+    state, facts = env.step(actions)
+    advantage = state.features[..., 11].float()
+    # Own-signed: the strongpoint holder sees a positive score, its opponent
+    # the mirror-negative of the same magnitude.
+    assert float(advantage[0, 0, 0]) > 0.1
+    torch.testing.assert_close(
+        advantage[0, 0, 0], -advantage[0, 1, 0], rtol=0, atol=5e-3
+    )
+    first_integral = float(state.features[0, 0, 0, 12])
+    assert first_integral > 0
+
+    state, facts = env.step(actions)
+    second_integral = float(state.features[0, 0, 0, 12])
+    assert second_integral > first_integral

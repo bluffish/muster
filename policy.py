@@ -20,7 +20,7 @@ from simulator import (
 )
 
 ACTION_SIZE = 4
-CHECKPOINT_VERSION = 11
+CHECKPOINT_VERSION = 12
 ENTITY_OFFSET_SCALE = 8.0
 
 
@@ -65,7 +65,7 @@ class Policy(nn.Module):
         self.register_buffer(
             "enemy_feature_sign",
             torch.tensor(
-                (-1, 1, -1, 1, -1, 1, 1, 1, -1, 1, 1), dtype=torch.float32
+                (-1, 1, -1, 1, -1, 1, 1, 1, -1, 1, 1, -1, -1), dtype=torch.float32
             ),
             persistent=False,
         )

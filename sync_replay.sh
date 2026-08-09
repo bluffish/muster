@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-run="local-hex-v18-projection-v1"
+run="local-hex-v19-score-v1"
 source_directory="/srv/muster-archive/$run/replays"
 published_root="/srv/muster/runs/$run"
 published_directory="$published_root/replays"

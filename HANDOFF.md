@@ -9,13 +9,15 @@ identity=/root/.ssh/id_ed25519
 
 ## Current run
 
-- Run: `local-hex-v18-projection-v1`
-- Service on AWS: `muster-training-v18.service`
-- W&B name/ID: `bowen3-v18-projection-v1`
-- New in v18: relative force projection (rules v0.6) — the whole map is
-  allocated by the ratio of the teams' projected influence, so encirclement
-  and annihilation translate directly into territory; same architecture;
-  fresh start
+- Run: `local-hex-v19-score-v1`
+- Service on AWS: `muster-training-v19.service`
+- W&B name/ID: `bowen3-v19-score-v1`
+- New in v19 (rules v0.7): presence scoring restored (v17's kappa rule —
+  v18's full allocation subsidized huddling) plus **score observability**:
+  every soldier sees its team's current signed control advantage and the
+  banked integral, so trailing teams can learn desperation and leading
+  teams defense; feature width 11 -> 13, CHECKPOINT_VERSION 12; fresh start
+- Learning rate 1e-3 (raised from 3e-4; resume now honors the flag)
 - Opponent: **mixed** — 75% of environments play the self-play snapshot pool,
   25% play the scripted charger (side-balanced)
 - Fresh start (v13 checkpoints are architecture-incompatible with the new
@@ -37,7 +39,25 @@ to avoid side bias.
 
 The only reward is zero-sum weighted territory change. With `gamma=1`, its episode sum equals final territory advantage. Normal cells have weight 1; the 21 strongpoint cells have weight 30.
 
-## Relative force projection (v18, rules 0.6)
+## Score-aware presence game (v19, rules 0.7)
+
+v19 reverts scoring to v17's presence rule — `share = I_t/(I_0+I_1+kappa)`,
+kappa 0.125 — after v18's measured failure mode: full allocation let a
+huddled army own its half without going there (one skirmish, then both
+blobs froze for 25 of 45 seconds). Presence scoring makes coverage cost
+bodies again.
+
+The new ingredient is **score observability** (features 11/12,
+`score_advantage` and `score_integral`, own-team-signed, negated in the
+enemy view, zero at reset). Rationale: integral scoring makes optimal play
+score-dependent — leaders should consolidate, trailers must force battles —
+but no one could see the score, so the shared policy learned the
+score-independent compromise: mutual coasting. With the score and clock
+both observable, "down 0.2 with ten seconds left" is a representable reason
+to charge. Registered prediction: late-episode freezing breaks because at
+almost every moment one team knows it is behind.
+
+## Relative force projection (v18, rules 0.6, superseded)
 
 v18 drops v17's absolute-influence neutrality: a cell's control shares are
 now the pure ratio `I_t / (I_0 + I_1)` of the teams' Gaussian influence
@@ -106,7 +126,7 @@ switch messaging on without an architecture break.
 All memory kwargs default to zero, so v14 checkpoints remain loadable and
 `CHECKPOINT_VERSION` stays 11. Launched 2026-08-09 by explicit decision,
 cutting v14's baseline short at ~update 390 (still in its avoidance valley;
-resumable via `muster-training-v18.service`). The v14 partial baseline plus
+resumable via `muster-training-v19.service`). The v14 partial baseline plus
 the v13 full trajectory serve as the memoryless comparison points.
 
 ## Entity-attention perception (v14)
@@ -237,29 +257,29 @@ run one at a time. Replays record `learner_mode`.
 Start or resume the current run:
 
 ```sh
-ssh -i "$identity" "$remote" 'sudo systemctl enable --now muster-training-v18.service'
+ssh -i "$identity" "$remote" 'sudo systemctl enable --now muster-training-v19.service'
 ```
 
 The launcher resumes `latest.pt` when it exists. To pause without changing boot behavior:
 
 ```sh
-ssh -i "$identity" "$remote" 'sudo systemctl stop muster-training-v18.service'
+ssh -i "$identity" "$remote" 'sudo systemctl stop muster-training-v19.service'
 ```
 
 To stop it persistently, including after reboots:
 
 ```sh
-ssh -i "$identity" "$remote" 'sudo systemctl disable --now muster-training-v18.service'
+ssh -i "$identity" "$remote" 'sudo systemctl disable --now muster-training-v19.service'
 ```
 
 Status and recent metrics:
 
 ```sh
-ssh -i "$identity" "$remote" 'systemctl --no-pager --full status muster-training-v18.service'
-ssh -i "$identity" "$remote" 'tail -5 /home/ubuntu/muster-local-hex/runs/local-hex-v18-projection-v1/metrics.jsonl'
+ssh -i "$identity" "$remote" 'systemctl --no-pager --full status muster-training-v19.service'
+ssh -i "$identity" "$remote" 'tail -5 /home/ubuntu/muster-local-hex/runs/local-hex-v19-score-v1/metrics.jsonl'
 ```
 
-For a genuinely fresh experiment, use a new run directory, W&B name/ID, launcher, and service rather than deleting or overwriting an old run. `run_training_v18.sh` is the current launcher template.
+For a genuinely fresh experiment, use a new run directory, W&B name/ID, launcher, and service rather than deleting or overwriting an old run. `run_training_v19.sh` is the current launcher template.
 
 ## Deploy training code
 
@@ -267,15 +287,15 @@ Stop training before deploying code that the Python process imports:
 
 ```sh
 scp -i "$identity" rl_env.py train.py viewer.py "$remote":/home/ubuntu/muster-local-hex/
-scp -i "$identity" run_training_v18.sh "$remote":/home/ubuntu/muster-local-hex/
-ssh -i "$identity" "$remote" 'chmod 0755 /home/ubuntu/muster-local-hex/run_training_v18.sh'
+scp -i "$identity" run_training_v19.sh "$remote":/home/ubuntu/muster-local-hex/
+ssh -i "$identity" "$remote" 'chmod 0755 /home/ubuntu/muster-local-hex/run_training_v19.sh'
 ```
 
 If the unit changes, install it and reload systemd:
 
 ```sh
-scp -i "$identity" muster-training-v18.service "$remote":/tmp/
-ssh -i "$identity" "$remote" 'sudo install -m 0644 /tmp/muster-training-v18.service /etc/systemd/system/ && sudo systemctl daemon-reload'
+scp -i "$identity" muster-training-v19.service "$remote":/tmp/
+ssh -i "$identity" "$remote" 'sudo install -m 0644 /tmp/muster-training-v19.service /etc/systemd/system/ && sudo systemctl daemon-reload'
 ```
 
 Then start the service with the command above.
@@ -287,21 +307,21 @@ Public viewer: <https://muster.bowen.sh/>
 The pipeline runs automatically about every 10 seconds:
 
 1. Training writes `update-N.html` on AWS.
-2. `muster-v18-replay-archive.timer` copies it to `/srv/muster-archive/local-hex-v18-projection-v1/replays` on this server.
+2. `muster-v19-replay-archive.timer` copies it to `/srv/muster-archive/local-hex-v19-score-v1/replays` on this server.
 3. `muster-replay-sync.timer` applies the current `viewer.py` template and publishes it.
 4. `/srv/muster/replays` points at the active run's history, while `/srv/muster/index.html` is the latest replay.
 
 Force an immediate refresh:
 
 ```sh
-sudo systemctl start muster-v18-replay-archive.service
+sudo systemctl start muster-v19-replay-archive.service
 sudo systemctl start muster-replay-sync.service
 ```
 
 Check the pipeline and public manifest:
 
 ```sh
-systemctl is-active muster-v18-replay-archive.timer muster-replay-sync.timer caddy
+systemctl is-active muster-v19-replay-archive.timer muster-replay-sync.timer caddy
 readlink /srv/muster/replays
 curl -fsS https://muster.bowen.sh/replays/manifest.json
 ```
@@ -312,7 +332,7 @@ When switching to a new run, update `run` in `sync_replay.sh` and the source/arc
 
 ```sh
 sudo install -m 0755 sync_replay.sh /usr/local/bin/muster-sync-replay
-sudo install -m 0755 archive_v18_replays.sh /usr/local/bin/muster-v18-archive-replays
+sudo install -m 0755 archive_v19_replays.sh /usr/local/bin/muster-v19-archive-replays
 sudo systemctl daemon-reload
 ```
 

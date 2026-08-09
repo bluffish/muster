@@ -191,7 +191,7 @@ def test_timeout_winner_integrates_weighted_control():
     assert cpu.advantage_integral[0] > 0
     owned_0 = int(TERRITORY_WEIGHTS[cpu.territory_owner[0] == 0].sum())
     owned_1 = int(TERRITORY_WEIGHTS[cpu.territory_owner[0] == 1].sum())
-    assert owned_0 > owned_1 > 0
+    assert owned_0 > 200 and 0 < owned_1 < 100
 
     wp = pytest.importorskip("warp")
     from simulator_gpu import GpuSimulator
@@ -211,24 +211,22 @@ def test_timeout_winner_integrates_weighted_control():
     )
 
 
-def test_center_holder_projects_strongpoints_and_wins():
+def test_strongpoint_control_outweighs_wider_plain_control():
     config = Config(soldiers_per_team=1, maximum_episode_seconds=0.1)
     centers = territory_centers(config)
     state = {
         "position": np.array(
-            [centers[territory_cell(0, 0)], centers[territory_cell(10, -5)]],
-            np.float32,
+            [centers[territory_cell(0, 0)], centers[territory_cell(10, 0)]], np.float32
         ),
     }
     actions = np.zeros((1, 2, 4), np.float32)
     cpu = CpuSimulator(config)
     cpu.reset(state)
     cpu.step(actions)
-    assert (cpu.territory_owner[0, STRONGPOINT_CELLS] == 0).all()
+    counts = [np.count_nonzero(cpu.territory_owner[0] == team) for team in (0, 1)]
+    assert abs(counts[0] - counts[1]) <= 3
     assert cpu.done[0] and cpu.winner[0] == 0
-    assert cpu.advantage_integral[0] > 0.3
-    shares = cpu.control_share[0]
-    np.testing.assert_allclose(shares.sum(axis=1), 1.0, rtol=0, atol=1e-5)
+    assert cpu.advantage_integral[0] > 0
 
     wp = pytest.importorskip("warp")
     from simulator_gpu import GpuSimulator
@@ -262,17 +260,12 @@ def test_control_requires_presence_and_equidistance_contests():
     sim.step(actions)
     assert sim.territory_owner[0, cell] == 0
 
-    # Equidistant remote projections contest the middle ground.
+    # Control fades the moment presence leaves: no ghost ownership.
     sim.position[0, 0] = centers[territory_cell(-10, 0)]
     sim.step(actions)
     assert sim.territory_owner[0, cell] == -1
 
-    # Relative proximity decides even at range: push the enemy farther out.
-    sim.position[0, 1] = centers[territory_cell(12, 0)]
-    sim.step(actions)
-    assert sim.territory_owner[0, cell] == 0
-
-    # A dead army projects nothing; the survivor claims everything.
+    # Dead soldiers project no control.
     sim.reset(
         {
             "position": np.array(
@@ -282,10 +275,9 @@ def test_control_requires_presence_and_equidistance_contests():
         }
     )
     sim.step(actions)
-    assert (sim.territory_owner[0] == 1).all()
-    np.testing.assert_allclose(sim.control_share[0, :, 1], 1.0, rtol=0, atol=1e-6)
+    assert sim.territory_owner[0, cell] == -1
 
-    # Mutual extinction splits the field evenly.
+    # Mutual extinction leaves the whole field neutral.
     sim.reset(
         {
             "position": np.array(
@@ -296,7 +288,7 @@ def test_control_requires_presence_and_equidistance_contests():
     )
     sim.step(actions)
     assert (sim.territory_owner[0] == -1).all()
-    np.testing.assert_allclose(sim.control_share[0], 0.5, rtol=0, atol=1e-6)
+    np.testing.assert_allclose(sim.control_share[0], 0.0, rtol=0, atol=1e-6)
 
 
 def test_warp_matches_reference():

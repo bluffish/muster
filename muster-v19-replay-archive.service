@@ -1,0 +1,8 @@
+[Unit]
+Description=Archive bowen3 Muster v19 score-aware presence training replays
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/muster-v19-archive-replays
