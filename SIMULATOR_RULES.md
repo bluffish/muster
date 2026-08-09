@@ -546,8 +546,8 @@ frame zero, and control shares are zero until the first step.)
 Three non-overlapping radius-1 strongpoints are centered at axial coordinates
 `(0, -8)`, `(0, 0)`, and `(0, 8)`. Each contains seven tiles. Every strongpoint
 tile has territory weight `90` (raised from `30` in version 0.9); every other
-tile has weight `1`, for a total territory weight of `3025`. Strongpoints
-therefore carry ~62% of the score: holding the contested center decisively
+tile has weight `1`, for a total territory weight of `2416`. Strongpoints
+therefore carry ~78% of the score: holding the contested center decisively
 outweighs out-spreading an opponent, so territory can no longer be won while
 avoiding contact. (Measured at weight 30, a scripted strongpoint-seeking
 charger beat a dispersing policy in only 6 of 32 games; at 90 its mean

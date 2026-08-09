@@ -80,11 +80,11 @@ def test_hex_territory_starts_balanced_with_a_neutral_center_line():
     assert STRONGPOINT_CENTERS.tolist() == [[0, -8], [0, 0], [0, 8]]
     assert len(STRONGPOINT_CELLS) == 21
     assert np.count_nonzero(TERRITORY_WEIGHTS == STRONGPOINT_WEIGHT) == 21
-    assert TERRITORY_TOTAL_WEIGHT == 1156
+    assert TERRITORY_TOTAL_WEIGHT == 526 + 21 * STRONGPOINT_WEIGHT
     weighted = [
         TERRITORY_WEIGHTS[TERRITORY_INITIAL_OWNER == team].sum() for team in (0, 1)
     ]
-    assert weighted == [434, 434]
+    assert weighted == [254 + 6 * STRONGPOINT_WEIGHT] * 2
     config = Config()
     np.testing.assert_array_equal(
         territory_indices(territory_centers(config), config),

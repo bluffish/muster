@@ -4,7 +4,7 @@ Version history of the training stack and game rules. Each run's exact flags
 are preserved in its checkpoint (`train_args`) and in git history.
 
 ## v20.1 — strongpoint scarcity (rules 0.9, current)
-`STRONGPOINT_WEIGHT` 30 -> 90 (strongpoints now ~62% of total score);
+`STRONGPOINT_WEIGHT` 30 -> 90 (strongpoints now ~78% of total score);
 run `local-hex-v20-charger-selfplay-v3` restarts charger-seeded pure
 self-play under the new rules. The v2 run proved the deeper problem was
 the game, not the learning: seeded fully aggressive, self-play de-escalated
