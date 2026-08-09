@@ -131,6 +131,7 @@ class Config:
     damage_scale: float = 5.0
     flank_damage_multiplier: float = 2.0
     maximum_episode_seconds: float = 45.0
+    control_radius: float = 8.0
     slope_height: float = 0.0
     slope_gravity: float = 24.0
     river_width: float = 0.0
@@ -178,6 +179,8 @@ class Config:
             raise ValueError("rates, speeds, damage values, and durations cannot be negative")
         if not 0 < self.collision_relaxation <= 1:
             raise ValueError("collision relaxation must be in (0, 1]")
+        if self.control_radius <= 0:
+            raise ValueError("control radius must be positive")
         if self.river_width >= self.world_width:
             raise ValueError("river must be narrower than the world")
         if self.river_width > 0 and not 2 * self.soldier_radius < self.bridge_width <= self.world_height:
@@ -305,7 +308,9 @@ class CpuSimulator:
         self.done = np.zeros(num_envs, bool)
         self.winner = np.full(num_envs, -2, np.int8)  # -2 ongoing, -1 draw
         self.territory_owner = np.empty((num_envs, TERRITORY_CELLS), np.int8)
+        self.advantage_integral = np.zeros(num_envs, np.float64)
         self.invalid_action = np.zeros(num_envs, bool)
+        self._territory_centers = territory_centers(self.config)
         self.reset()
 
     @property
@@ -322,6 +327,7 @@ class CpuSimulator:
             "done": self.done,
             "winner": self.winner,
             "territory_owner": self.territory_owner,
+            "advantage_integral": self.advantage_integral,
         }
 
     def snapshot(self, env: int = 0) -> dict[str, np.ndarray | int | bool]:
@@ -403,6 +409,7 @@ class CpuSimulator:
         self.substep_count.fill(0)
         self.done.fill(False)
         self.winner.fill(-2)
+        self.advantage_integral.fill(0.0)
         self.territory_owner[:] = TERRITORY_INITIAL_OWNER
         if state and "territory_owner" in state:
             owner = np.asarray(state["territory_owner"], dtype=np.int8)
@@ -665,26 +672,41 @@ class CpuSimulator:
             self.substep_count[env] += 1
 
     def _update_territory(self) -> None:
+        """Presence control: a cell belongs to the closest living soldier's team.
+
+        Ownership requires that soldier within ``control_radius``; equal
+        nearest distances or an empty radius leave the cell unowned.
+        """
+        limit = np.float32(self.config.control_radius) ** 2
         for env in np.flatnonzero(~self.done):
+            nearest = np.full((2, TERRITORY_CELLS), np.inf, np.float32)
             living = np.flatnonzero(self.alive[env])
-            presence = np.zeros((2, TERRITORY_CELLS), bool)
-            if len(living):
-                cell = territory_indices(self.position[env, living], self.config)
-                presence[self.team[env, living], cell] = True
-            only_0 = presence[0] & ~presence[1]
-            only_1 = presence[1] & ~presence[0]
-            self.territory_owner[env, only_0] = 0
-            self.territory_owner[env, only_1] = 1
-            self.territory_owner[env, presence[0] & presence[1]] = -1
+            for team in (0, 1):
+                members = living[self.team[env, living] == team]
+                if len(members):
+                    deltas = (
+                        self._territory_centers[:, None, :]
+                        - self.position[env, members][None, :, :]
+                    ).astype(np.float32)
+                    nearest[team] = (deltas**2).sum(-1).min(axis=1)
+            owner = np.full(TERRITORY_CELLS, -1, np.int8)
+            owner[(nearest[0] < nearest[1]) & (nearest[0] <= limit)] = 0
+            owner[(nearest[1] < nearest[0]) & (nearest[1] <= limit)] = 1
+            self.territory_owner[env] = owner
+
+    def _accumulate_control(self) -> None:
+        for env in np.flatnonzero(~self.done):
+            owned_0 = int(TERRITORY_WEIGHTS[self.territory_owner[env] == 0].sum())
+            owned_1 = int(TERRITORY_WEIGHTS[self.territory_owner[env] == 1].sum())
+            self.advantage_integral[env] += (owned_0 - owned_1) / TERRITORY_TOTAL_WEIGHT
 
     def _finish_episodes(self) -> None:
         for env in range(self.num_envs):
             if self.done[env] or self.step_count[env] < self.config.maximum_decision_steps:
                 continue
-            owned_0 = int(TERRITORY_WEIGHTS[self.territory_owner[env] == 0].sum())
-            owned_1 = int(TERRITORY_WEIGHTS[self.territory_owner[env] == 1].sum())
+            integral = self.advantage_integral[env]
             self.done[env] = True
-            self.winner[env] = 0 if owned_0 > owned_1 else 1 if owned_1 > owned_0 else -1
+            self.winner[env] = 0 if integral > 1e-9 else 1 if integral < -1e-9 else -1
 
     def step(self, actions: np.ndarray) -> dict[str, np.ndarray]:
         actions = np.asarray(actions, dtype=np.float32)
@@ -711,6 +733,7 @@ class CpuSimulator:
         for _ in range(self.config.physics_substeps):
             self._substep(move, desired_angle)
         self._update_territory()
+        self._accumulate_control()
         running = ~self.done
         self.step_count[running] += 1
         self._finish_episodes()

@@ -2,7 +2,7 @@
 
 Status: normative specification for the current simulator implementation
 
-Version: 0.3
+Version: 0.4
 
 Scope: world dynamics, collisions, combat, terrain, and episode termination
 
@@ -514,32 +514,32 @@ collision, or random damage roll in version 0.3.
 
 ## 15. Episode termination
 
-The battlefield is tiled by a radius-13 axial hex grid containing 547 persistent
-territory cells. The 260 cells west of the center column start owned by team 0,
-the mirrored 260 eastern cells start owned by team 1, and the 27-cell center
-column starts neutral.
+The battlefield is tiled by a radius-13 axial hex grid containing 547
+territory cells. Control is a pure function of present force: after every
+decision step, each cell belongs to the team of the nearest living soldier,
+provided that soldier's center is within `control_radius` of the cell center
+(compared in the squared-distance domain). Exactly equal nearest distances,
+or no living soldier within the radius, leave the cell unowned. Dead soldiers
+project no control, and control is never remembered: a cell with no qualifying
+presence this step is unowned this step, regardless of history. (The initial
+symmetric ownership constant survives only as the pre-first-step reset value
+shown at frame zero.)
 
 Three non-overlapping radius-1 strongpoints are centered at axial coordinates
 `(0, -8)`, `(0, 0)`, and `(0, 8)`. Each contains seven tiles. Every strongpoint
-tile has territory weight `30`; every other tile has weight `1`. Thus the map's
-total territory weight is `1156`, and the three strongpoints jointly hold 630
-points, or about 54.5% of the final score. Controlling all three strongpoints
-therefore beats ownership of every other tile combined (630 to 526). Initial
-weighted ownership remains exactly symmetric.
+tile has territory weight `30`; every other tile has weight `1`, for a total
+territory weight of `1156`.
 
-After every decision step, ownership updates
-simultaneously from living soldiers whose centers are inside each cell:
-
-- presence by exactly one team transfers the cell to that team;
-- presence by both teams makes the cell contested and owned by neither;
-- no presence leaves the current ownership unchanged.
-
-An episode always runs for
+Scoring is the time integral of held control. After each decision step's
+ownership update, every environment accumulates
+`(weighted_control_0 - weighted_control_1) / total_weight` into its advantage
+integral. An episode always runs for
 `maximum_episode_seconds / decision_dt` decision steps, including when a team
-has no living soldiers. At the end, sum the weights of every tile each team
-owns; the team with more weighted territory wins. Equal scores produce a draw.
-Living count, health, damage, and elimination have no direct effect on the
-result.
+has no living soldiers. At the end, a positive integral is a team-0 win, a
+negative one a team-1 win, and a magnitude within `1e-9` is a draw. Health,
+damage, and elimination affect the result only through the control their
+presence or absence projects — which, because dead soldiers project nothing,
+makes attrition directly territorial.
 
 ## 16. Default configuration
 
@@ -570,6 +570,7 @@ result.
 | Charge damage scale | `5.0` |
 | Flank/rear damage multiplier | `2.0` |
 | Maximum episode duration | `45.0 s` |
+| Control radius | `8.0` |
 | Territory grid | radius `13` (`547` cells) |
 | Strongpoints | radius `1` at `(0,-8)`, `(0,0)`, `(0,8)` |
 | Strongpoint tile weight | `30` |
@@ -629,10 +630,13 @@ Before optimization, a new implementation should pass at least these cases:
 12. **River collision:** a disc is projected out of water, while the same path
     through the bridge remains passable.
 13. **Simultaneous elimination:** two lethal attacks in the same phase kill both
-    soldiers without ending the episode; final territory alone determines the
-    result.
-14. **Weighted victory:** one owned strongpoint tile defeats nine owned normal
-    tiles, while ten normal tiles tie it.
+    soldiers without ending the episode; the control integral alone determines
+    the result.
+14. **Weighted control:** a soldier holding the center strongpoint cluster
+    outscores an opponent holding a similar-sized disc of plain tiles.
+15. **Presence control:** equidistant opposing soldiers contest a cell; a sole
+    soldier within the control radius owns it; moving away or dying releases
+    it the same step.
 
 ## 19. Explicit non-goals for version 0.3
 

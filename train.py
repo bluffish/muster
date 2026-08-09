@@ -312,10 +312,17 @@ def reward_from_facts(
     facts: dict[str, torch.Tensor],
     *,
     accumulate: bool = False,
+    scale: float = 1.0,
 ) -> None:
-    """Write the zero-sum change in territory advantage for this step."""
-    delta = facts["territory_delta"]
-    advantage = delta[:, 0] - delta[:, 1]
+    """Write the zero-sum weighted control advantage held this step.
+
+    Under presence control the score is the time integral of held advantage,
+    so the per-step reward is the current level, not the change. With
+    ``scale = 1 / maximum_decision_steps`` the undiscounted episode return
+    equals the episode's time-averaged control advantage in ``[-1, 1]``.
+    """
+    territory = facts["territory"]
+    advantage = (territory[:, 0] - territory[:, 1]) * scale
     if accumulate:
         output[:, 0].add_(advantage)
     else:
@@ -678,6 +685,7 @@ def collect_rollout(
     synchronize(state.features.device)
     started = time.perf_counter()
     learner_mask = learner_teams[:, :, None, None]
+    reward_scale = 1.0 / env.config.maximum_decision_steps
     step_damage = torch.zeros_like(rollout["damage"][0])
     step_territory_delta = torch.zeros_like(step_damage)
     if replay is not None:
@@ -719,7 +727,10 @@ def collect_rollout(
                 before_reset=replay.capture if replay is not None else None,
             )
             reward_from_facts(
-                rollout["reward"][step], facts, accumulate=repeat > 0
+                rollout["reward"][step],
+                facts,
+                accumulate=repeat > 0,
+                scale=reward_scale,
             )
             if repeat == 0:
                 rollout["done"][step].copy_(facts["done"])

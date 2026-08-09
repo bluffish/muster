@@ -31,7 +31,7 @@ def test_rl_step_and_policy_are_finite():
     assert not torch.from_numpy(env.sim.numpy_state()["done"]).any()
 
 
-def test_persistent_territory_is_symmetric_and_in_local_state():
+def test_presence_control_is_symmetric_and_in_local_state():
     torch = pytest.importorskip("torch")
     wp = pytest.importorskip("warp")
     from rl_env import RLEnv
@@ -58,51 +58,46 @@ def test_persistent_territory_is_symmetric_and_in_local_state():
 
     centers = territory_centers(env.config)
     cell = {tuple(value): index for index, value in enumerate(TERRITORY_COORDINATES)}
-    invading = centers[[cell[(5, 0)], cell[(5, -1)], cell[(10, 0)], cell[(10, -1)]]]
-    env.sim.reset({"position": invading})
+    spread = centers[[cell[(5, 0)], cell[(5, -1)], cell[(10, 0)], cell[(10, -1)]]]
+    env.sim.reset({"position": spread})
     wp.synchronize_device(env.sim.device)
-    state = env.observe()
-    occupied_owner = state.owners[0].gather(0, state.cells[0, 0].long())
-    assert (occupied_owner == 1).all()
     actions = torch.zeros((1, 2, 2, 4), device=env.device)
-    _, facts = env.step(actions, reset_done=False)
-    assert facts["done"].bool().all() and (facts["winner"] == 0).all()
-    assert facts["territory"][0, 0] > expected_fraction
-    assert facts["territory"][0, 1] < expected_fraction
+    state, facts = env.step(actions, reset_done=False)
+    assert facts["done"].bool().all()
+    occupied_owner = state.owners[0].gather(0, state.cells[0, 0].long())
+    assert (occupied_owner == 0).all()
+    enemy_owner = state.owners[0].gather(0, state.cells[0, 1].long())
+    assert (enemy_owner == 1).all()
+    assert 0 < facts["territory"][0, 0] < expected_fraction
+    assert 0 < facts["territory"][0, 1] < expected_fraction
     expected_delta = facts["territory"].detach().cpu() - initial_territory
     torch.testing.assert_close(facts["territory_delta"].detach().cpu(), expected_delta)
 
 
-def test_reward_is_per_step_territory_advantage_delta_only():
+def test_reward_is_scaled_control_advantage_level():
     torch = pytest.importorskip("torch")
     from train import reward_from_facts
 
     facts = {
         "done": torch.tensor([0], dtype=torch.int32),
-        "territory_delta": torch.tensor([[0.04, -0.01]]),
+        "territory": torch.tensor([[0.30, 0.20]]),
     }
     reward = torch.zeros((1, 2))
-    reward_from_facts(reward, facts)
+    reward_from_facts(reward, facts, scale=0.5)
     torch.testing.assert_close(reward, torch.tensor([[0.05, -0.05]]))
     facts["done"].fill_(1)
-    reward_from_facts(reward, facts)
+    reward_from_facts(reward, facts, scale=0.5)
     torch.testing.assert_close(reward, torch.tensor([[0.05, -0.05]]))
 
-    reward_from_facts(reward, facts, accumulate=True)
+    reward_from_facts(reward, facts, accumulate=True, scale=0.5)
     torch.testing.assert_close(reward, torch.tensor([[0.10, -0.10]]))
 
 
-def test_capturing_a_strongpoint_tile_produces_tenfold_territory_delta():
+def test_strongpoint_control_dominates_equal_plain_control():
     torch = pytest.importorskip("torch")
     wp = pytest.importorskip("warp")
     from rl_env import RLEnv
-    from simulator import (
-        STRONGPOINT_WEIGHT,
-        TERRITORY_COORDINATES,
-        TERRITORY_TOTAL_WEIGHT,
-        Config,
-        territory_centers,
-    )
+    from simulator import TERRITORY_COORDINATES, Config, territory_centers
 
     device = "cuda" if torch.cuda.is_available() and wp.is_cuda_available() else "cpu"
     config = Config(soldiers_per_team=1, maximum_episode_seconds=0.1)
@@ -114,9 +109,10 @@ def test_capturing_a_strongpoint_tile_produces_tenfold_territory_delta():
     actions = torch.zeros((1, 2, 1, 4), device=env.device)
     _, facts = env.step(actions, reset_done=False)
 
-    change = STRONGPOINT_WEIGHT / TERRITORY_TOTAL_WEIGHT
-    expected = torch.tensor([[change, -change]], device=env.device)
-    torch.testing.assert_close(facts["territory_delta"], expected)
+    # Both soldiers project similar-sized discs, but only the first covers
+    # the 7-tile center strongpoint cluster (weight 30 each).
+    assert float(facts["territory"][0, 0] - facts["territory"][0, 1]) > 150 / 1156
+    assert facts["done"].bool().all() and (facts["winner"] == 0).all()
 
 
 def test_terminal_team_reward_produces_per_soldier_advantages():

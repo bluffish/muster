@@ -1,0 +1,19 @@
+[Unit]
+Description=Muster v16 presence control MAPPO training
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/muster-local-hex
+ExecStart=/home/ubuntu/muster-local-hex/run_training_v16.sh
+Restart=on-failure
+RestartSec=15
+KillSignal=SIGINT
+TimeoutStopSec=90
+StandardError=inherit
+
+[Install]
+WantedBy=multi-user.target

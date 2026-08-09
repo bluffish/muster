@@ -174,7 +174,7 @@ def test_each_ready_soldier_strikes_only_the_most_centered_target():
     np.testing.assert_allclose(sim.health[0], [100, 100, 90, 100])
 
 
-def test_timeout_uses_only_persistent_territory():
+def test_timeout_winner_integrates_weighted_control():
     config = Config(soldiers_per_team=1, maximum_episode_seconds=0.1)
     centers = territory_centers(config)
     state = {
@@ -188,7 +188,10 @@ def test_timeout_uses_only_persistent_territory():
     cpu.reset(state)
     cpu.step(actions)
     assert cpu.done[0] and cpu.winner[0] == 0
-    assert np.count_nonzero(cpu.territory_owner == 0) == 261
+    assert cpu.advantage_integral[0] > 0
+    owned_0 = int(TERRITORY_WEIGHTS[cpu.territory_owner[0] == 0].sum())
+    owned_1 = int(TERRITORY_WEIGHTS[cpu.territory_owner[0] == 1].sum())
+    assert owned_0 > 200 and 0 < owned_1 < 100
 
     wp = pytest.importorskip("warp")
     from simulator_gpu import GpuSimulator
@@ -200,23 +203,25 @@ def test_timeout_uses_only_persistent_territory():
     gpu = warp_sim.numpy_state()
     assert gpu["done"][0] and gpu["winner"][0] == 0
     np.testing.assert_array_equal(gpu["territory_owner"], cpu.territory_owner)
+    np.testing.assert_allclose(
+        gpu["advantage_integral"], cpu.advantage_integral, rtol=1e-5, atol=1e-7
+    )
 
 
-def test_one_strongpoint_tile_outscores_nine_normal_tiles():
+def test_strongpoint_control_outweighs_wider_plain_control():
     config = Config(soldiers_per_team=1, maximum_episode_seconds=0.1)
-    owner = np.full(TERRITORY_CELLS, -1, np.int8)
-    strongpoint = int(STRONGPOINT_CELLS[len(STRONGPOINT_CELLS) // 2])
-    normal = np.flatnonzero(TERRITORY_WEIGHTS == 1)[:9]
-    owner[strongpoint] = 0
-    owner[normal] = 1
+    centers = territory_centers(config)
     state = {
-        "position": territory_centers(config)[[strongpoint, normal[0]]],
-        "territory_owner": owner,
+        "position": np.array(
+            [centers[territory_cell(0, 0)], centers[territory_cell(10, 0)]], np.float32
+        ),
     }
     actions = np.zeros((1, 2, 4), np.float32)
     cpu = CpuSimulator(config)
     cpu.reset(state)
     cpu.step(actions)
+    counts = [np.count_nonzero(cpu.territory_owner[0] == team) for team in (0, 1)]
+    assert abs(counts[0] - counts[1]) <= 3
     assert cpu.done[0] and cpu.winner[0] == 0
 
     wp = pytest.importorskip("warp")
@@ -229,24 +234,44 @@ def test_one_strongpoint_tile_outscores_nine_normal_tiles():
     assert warp_sim.numpy_state()["winner"][0] == 0
 
 
-def test_territory_persists_and_simultaneous_presence_contests():
+def test_control_requires_presence_and_equidistance_contests():
     config = Config(soldiers_per_team=1, maximum_episode_seconds=1)
     sim = CpuSimulator(config)
     actions = np.zeros((1, 2, 4), np.float32)
     centers = territory_centers(config)
-    cell = territory_cell(1, 0)
-    target = np.array([centers[cell], centers[cell] + (0, 0.1)], np.float32)
-    sim.reset({"position": target})
+    cell = territory_cell(0, 0)
+    center = centers[cell]
+
+    # Exactly equidistant opposing soldiers contest the cell.
+    flanking = np.array(
+        [center - (4.0, 0.0), center + (4.0, 0.0)], np.float32
+    )
+    sim.reset({"position": flanking})
     sim.step(actions)
     assert sim.territory_owner[0, cell] == -1
 
-    target[1] = centers[territory_cell(10, 0)]
-    sim.reset({"position": target})
+    # A sole nearby soldier controls it.
+    sole = np.array([center - (4.0, 0.0), centers[territory_cell(10, 0)]], np.float32)
+    sim.reset({"position": sole})
     sim.step(actions)
     assert sim.territory_owner[0, cell] == 0
+
+    # Control fades the moment presence leaves: no ghost ownership.
     sim.position[0, 0] = centers[territory_cell(-10, 0)]
     sim.step(actions)
-    assert sim.territory_owner[0, cell] == 0
+    assert sim.territory_owner[0, cell] == -1
+
+    # Dead soldiers project no control.
+    sim.reset(
+        {
+            "position": np.array(
+                [center, centers[territory_cell(10, 0)]], np.float32
+            ),
+            "health": np.array([0.0, 100.0], np.float32),
+        }
+    )
+    sim.step(actions)
+    assert sim.territory_owner[0, cell] == -1
 
 
 def test_warp_matches_reference():
@@ -311,8 +336,12 @@ def test_dense_warp_contacts_are_side_and_index_order_invariant():
         int(TERRITORY_WEIGHTS[TERRITORY_INITIAL_OWNER == team].sum())
         for team in (0, 1)
     ]
-    np.testing.assert_array_equal(result["winner"], [-1, -1])
-    np.testing.assert_array_equal(scores, [expected, expected])
+    del expected
+    np.testing.assert_array_equal(
+        result["territory_owner"][0], result["territory_owner"][1]
+    )
+    np.testing.assert_array_equal(result["winner"][0], result["winner"][1])
+    np.testing.assert_array_equal(scores[0], scores[1])
 
 
 def test_hex_wall_projection_matches_warp():

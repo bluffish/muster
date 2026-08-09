@@ -9,11 +9,12 @@ identity=/root/.ssh/id_ed25519
 
 ## Current run
 
-- Run: `local-hex-v15-memory-v1`
-- Service on AWS: `muster-training-v15.service`
-- W&B name/ID: `bowen3-v15-memory-v1`
-- New in v15: per-soldier GRU memory (64 units, BPTT window 15) and the
-  reserved dormant message slot; fresh start
+- Run: `local-hex-v16-control-v1`
+- Service on AWS: `muster-training-v16.service`
+- W&B name/ID: `bowen3-v16-control-v1`
+- New in v16: presence-based territory control and time-integral scoring
+  (rules v0.4, see below); same v15 architecture (GRU memory, modes, dormant
+  message slot); fresh start
 - Opponent: **mixed** — 75% of environments play the self-play snapshot pool,
   25% play the scripted charger (side-balanced)
 - Fresh start (v13 checkpoints are architecture-incompatible with the new
@@ -35,6 +36,31 @@ to avoid side bias.
 
 The only reward is zero-sum weighted territory change. With `gamma=1`, its episode sum equals final territory advantage. Normal cells have weight 1; the 21 strongpoint cells have weight 30.
 
+## Presence control and integral scoring (v16, rules 0.4)
+
+v16 changes the game, not the model. Motivation: v15's pool self-play
+converged to a formal peace treaty (measured: zero contacts, zero deaths,
+strongpoints split 9/9, armies parked 40+ units apart) because persistent
+paint-once ownership made a partition stable, exactly as it earlier enabled
+martyrdom-painting and endgame-only play. The persistence rule was the
+artificial core, so it is gone:
+
+- **Control = presence.** Each decision step, every cell belongs to the team
+  of the nearest living soldier within `control_radius` (8.0); equal
+  distances or an empty radius leave it unowned. Dead soldiers project
+  nothing; control is never remembered. Killing is taking ground, evasion
+  cedes it while it saves you, and coverage-versus-mass becomes the central
+  tactical tension.
+- **Score = time integral of held control.** The winner is the sign of the
+  accumulated weighted advantage (draws within 1e-9); the per-step reward is
+  the held advantage level scaled by `1/maximum_decision_steps`, so the
+  episode return is the time-averaged control advantage in [-1, 1].
+
+SIMULATOR_RULES.md is updated to version 0.4. Scores, anchors, and replays
+are not comparable with rules-0.3 runs. Architecture checkpoints remain
+loadable (`CHECKPOINT_VERSION` 11) but resuming a rules-0.3 policy into 0.4
+means playing a different game; v16 starts fresh.
+
 ## GRU memory + sequence PPO (v15)
 
 v15 gives each soldier a persistent 64-unit GRU state (`--memory-size 64`)
@@ -50,7 +76,7 @@ switch messaging on without an architecture break.
 All memory kwargs default to zero, so v14 checkpoints remain loadable and
 `CHECKPOINT_VERSION` stays 11. Launched 2026-08-09 by explicit decision,
 cutting v14's baseline short at ~update 390 (still in its avoidance valley;
-resumable via `muster-training-v15.service`). The v14 partial baseline plus
+resumable via `muster-training-v16.service`). The v14 partial baseline plus
 the v13 full trajectory serve as the memoryless comparison points.
 
 ## Entity-attention perception (v14)
@@ -181,29 +207,29 @@ run one at a time. Replays record `learner_mode`.
 Start or resume the current run:
 
 ```sh
-ssh -i "$identity" "$remote" 'sudo systemctl enable --now muster-training-v15.service'
+ssh -i "$identity" "$remote" 'sudo systemctl enable --now muster-training-v16.service'
 ```
 
 The launcher resumes `latest.pt` when it exists. To pause without changing boot behavior:
 
 ```sh
-ssh -i "$identity" "$remote" 'sudo systemctl stop muster-training-v15.service'
+ssh -i "$identity" "$remote" 'sudo systemctl stop muster-training-v16.service'
 ```
 
 To stop it persistently, including after reboots:
 
 ```sh
-ssh -i "$identity" "$remote" 'sudo systemctl disable --now muster-training-v15.service'
+ssh -i "$identity" "$remote" 'sudo systemctl disable --now muster-training-v16.service'
 ```
 
 Status and recent metrics:
 
 ```sh
-ssh -i "$identity" "$remote" 'systemctl --no-pager --full status muster-training-v15.service'
-ssh -i "$identity" "$remote" 'tail -5 /home/ubuntu/muster-local-hex/runs/local-hex-v15-memory-v1/metrics.jsonl'
+ssh -i "$identity" "$remote" 'systemctl --no-pager --full status muster-training-v16.service'
+ssh -i "$identity" "$remote" 'tail -5 /home/ubuntu/muster-local-hex/runs/local-hex-v16-control-v1/metrics.jsonl'
 ```
 
-For a genuinely fresh experiment, use a new run directory, W&B name/ID, launcher, and service rather than deleting or overwriting an old run. `run_training_v15.sh` is the current launcher template.
+For a genuinely fresh experiment, use a new run directory, W&B name/ID, launcher, and service rather than deleting or overwriting an old run. `run_training_v16.sh` is the current launcher template.
 
 ## Deploy training code
 
@@ -211,15 +237,15 @@ Stop training before deploying code that the Python process imports:
 
 ```sh
 scp -i "$identity" rl_env.py train.py viewer.py "$remote":/home/ubuntu/muster-local-hex/
-scp -i "$identity" run_training_v15.sh "$remote":/home/ubuntu/muster-local-hex/
-ssh -i "$identity" "$remote" 'chmod 0755 /home/ubuntu/muster-local-hex/run_training_v15.sh'
+scp -i "$identity" run_training_v16.sh "$remote":/home/ubuntu/muster-local-hex/
+ssh -i "$identity" "$remote" 'chmod 0755 /home/ubuntu/muster-local-hex/run_training_v16.sh'
 ```
 
 If the unit changes, install it and reload systemd:
 
 ```sh
-scp -i "$identity" muster-training-v15.service "$remote":/tmp/
-ssh -i "$identity" "$remote" 'sudo install -m 0644 /tmp/muster-training-v15.service /etc/systemd/system/ && sudo systemctl daemon-reload'
+scp -i "$identity" muster-training-v16.service "$remote":/tmp/
+ssh -i "$identity" "$remote" 'sudo install -m 0644 /tmp/muster-training-v16.service /etc/systemd/system/ && sudo systemctl daemon-reload'
 ```
 
 Then start the service with the command above.
@@ -231,21 +257,21 @@ Public viewer: <https://muster.bowen.sh/>
 The pipeline runs automatically about every 10 seconds:
 
 1. Training writes `update-N.html` on AWS.
-2. `muster-v15-replay-archive.timer` copies it to `/srv/muster-archive/local-hex-v15-memory-v1/replays` on this server.
+2. `muster-v16-replay-archive.timer` copies it to `/srv/muster-archive/local-hex-v16-control-v1/replays` on this server.
 3. `muster-replay-sync.timer` applies the current `viewer.py` template and publishes it.
 4. `/srv/muster/replays` points at the active run's history, while `/srv/muster/index.html` is the latest replay.
 
 Force an immediate refresh:
 
 ```sh
-sudo systemctl start muster-v15-replay-archive.service
+sudo systemctl start muster-v16-replay-archive.service
 sudo systemctl start muster-replay-sync.service
 ```
 
 Check the pipeline and public manifest:
 
 ```sh
-systemctl is-active muster-v15-replay-archive.timer muster-replay-sync.timer caddy
+systemctl is-active muster-v16-replay-archive.timer muster-replay-sync.timer caddy
 readlink /srv/muster/replays
 curl -fsS https://muster.bowen.sh/replays/manifest.json
 ```
@@ -256,7 +282,7 @@ When switching to a new run, update `run` in `sync_replay.sh` and the source/arc
 
 ```sh
 sudo install -m 0755 sync_replay.sh /usr/local/bin/muster-sync-replay
-sudo install -m 0755 archive_v15_replays.sh /usr/local/bin/muster-v15-archive-replays
+sudo install -m 0755 archive_v16_replays.sh /usr/local/bin/muster-v16-archive-replays
 sudo systemctl daemon-reload
 ```
 
