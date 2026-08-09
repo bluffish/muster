@@ -381,10 +381,22 @@ function draw() {
   ctx.restore();
   if (hexRadius&&strongpointCells.length) {
     ctx.save(); ctx.translate(left,top); ctx.scale(geometryRatio,geometryRatio);
-    ctx.fillStyle="rgba(255,196,64,.10)"; ctx.strokeStyle="#ffc440"; ctx.lineWidth=Math.max(1.5*dpr,2)/geometryRatio;
-    for (const cell of strongpointCells) {
+    ctx.lineWidth=Math.max(1.5*dpr,2)/geometryRatio;
+    const baseCells=Array.isArray(cfg.team_base_cells)?cfg.team_base_cells:null;
+    const drawCell=cell=>{
       if (territoryPaths.length) { ctx.fill(territoryPaths[cell]); ctx.stroke(territoryPaths[cell]); }
       else { territoryHexPath(ctx,territoryHexes[cell],worldWidth,worldHeight); ctx.fill(); ctx.stroke(); }
+    };
+    if (baseCells) {
+      // Each base is tinted in the color of the team that SCORES there:
+      // team_base_cells[0] is blue's own base, so red's target.
+      ctx.fillStyle="rgba(255,77,95,.12)"; ctx.strokeStyle="#ff4d5f";
+      for (const cell of baseCells[0]) drawCell(cell);
+      ctx.fillStyle="rgba(53,167,255,.12)"; ctx.strokeStyle="#35a7ff";
+      for (const cell of baseCells[1]) drawCell(cell);
+    } else {
+      ctx.fillStyle="rgba(255,196,64,.10)"; ctx.strokeStyle="#ffc440";
+      for (const cell of strongpointCells) drawCell(cell);
     }
     ctx.restore();
   }

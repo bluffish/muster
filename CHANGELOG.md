@@ -3,7 +3,20 @@
 Version history of the training stack and game rules. Each run's exact flags
 are preserved in its checkpoint (`train_args`) and in git history.
 
-## v20.2 — the long map (rules 0.10, current)
+## v21 — assault scoring (rules 0.11, current)
+The bases. Each team owns one radius-1 base deep in its half of the long
+map — (-13,7) west / (13,-6) east, an x-mirror pair — and scores ONLY
+through influence on the enemy's base (weight 250/tile, ~76% of a team's
+attainable score; plain ground keeps weight 1; own base is worth 0 and
+matters only as denial). Chess-inspired structural fix after the truce
+history: the objective now lives behind the opposing army, so no peaceful
+arrangement is an equilibrium — mutual camping scores zero and loses to
+any raid, a base swap loses to recalling a few defenders. Scoring,
+observation features (per-team cell values), the scripted opponent
+(marches on the enemy base), the viewer (bases tinted in the scoring
+team's color), and the tests are all per-team now.
+
+## v20.2 — the long map (rules 0.10)
 Elongated hexagonal arena: flat north/south walls tapering to east/west
 points, 39 columns x 19 rows at the waist (561 cells, world 88.5 x 49.4,
 long axis = attack axis, spawn separation ~44 units, strongpoints moved

@@ -51,29 +51,51 @@ TERRITORY_INITIAL_OWNER = np.where(
     np.where(TERRITORY_COORDINATES[:, 0] > 0, 1, -1),
 ).astype(np.int32)
 
-STRONGPOINT_CENTERS = np.array(((0, -6), (0, 0), (0, 6)), np.int32)
+# Assault scoring (rules 0.11): each team owns one radius-1 base deep in its
+# half and scores ONLY through influence on the enemy's base (plus a small
+# symmetric value on plain ground). A team's own base is worth nothing to it
+# except denial: defenders standing on it dilute the attacker's share.
+# The pair is x-mirror symmetric (both centers sit at +0.5 rows), matching
+# the actor's side canonicalization, which reflects across x.
+BASE_CENTERS = np.array(((-13, 7), (13, -6)), np.int32)
 
-STRONGPOINT_RADIUS = 1
+BASE_RADIUS = 1
 
-STRONGPOINT_WEIGHT = 90
+BASE_WEIGHT = 250
 
-_strongpoint_delta = TERRITORY_COORDINATES[:, None] - STRONGPOINT_CENTERS[None]
+_base_delta = TERRITORY_COORDINATES[:, None] - BASE_CENTERS[None]
 
-_strongpoint_distance = np.maximum.reduce(
+_base_distance = np.maximum.reduce(
     (
-        np.abs(_strongpoint_delta[..., 0]),
-        np.abs(_strongpoint_delta[..., 1]),
-        np.abs(_strongpoint_delta.sum(axis=-1)),
+        np.abs(_base_delta[..., 0]),
+        np.abs(_base_delta[..., 1]),
+        np.abs(_base_delta.sum(axis=-1)),
     )
 )
 
-STRONGPOINT_MASK = np.any(_strongpoint_distance <= STRONGPOINT_RADIUS, axis=1)
+# BASE_MASKS[t] marks the tiles of team t's OWN base (west for team 0).
+BASE_MASKS = (_base_distance <= BASE_RADIUS).T
 
+BASE_CELLS_BY_TEAM = [np.flatnonzero(mask).astype(np.int32) for mask in BASE_MASKS]
+
+# TEAM_TERRITORY_WEIGHTS[t, c] is what a unit of team t's control share on
+# cell c is worth to team t: plain ground 1, the enemy base BASE_WEIGHT,
+# its own base 0.
+TEAM_TERRITORY_WEIGHTS = np.ones((2, len(TERRITORY_COORDINATES)), np.int32)
+for _team in (0, 1):
+    TEAM_TERRITORY_WEIGHTS[_team, BASE_MASKS[1 - _team]] = BASE_WEIGHT
+    TEAM_TERRITORY_WEIGHTS[_team, BASE_MASKS[_team]] = 0
+
+TEAM_TOTAL_WEIGHT = int(TEAM_TERRITORY_WEIGHTS[0].sum())
+assert TEAM_TOTAL_WEIGHT == int(TEAM_TERRITORY_WEIGHTS[1].sum())
+
+# Legacy aliases kept for display and scripted-opponent code: the union of
+# both bases renders as highlighted ground, and the symmetric weight map is
+# the per-cell maximum of the two team maps.
+STRONGPOINT_CENTERS = BASE_CENTERS
+STRONGPOINT_WEIGHT = BASE_WEIGHT
+STRONGPOINT_MASK = BASE_MASKS.any(axis=0)
 STRONGPOINT_CELLS = np.flatnonzero(STRONGPOINT_MASK).astype(np.int32)
-
-TERRITORY_WEIGHTS = np.where(STRONGPOINT_MASK, STRONGPOINT_WEIGHT, 1).astype(np.int32)
-
-TERRITORY_TOTAL_WEIGHT = int(TERRITORY_WEIGHTS.sum())
 
 # Arena walls: three point-symmetric pairs. Normals point outward for the
 # positive member of each pair; the negative member mirrors through the

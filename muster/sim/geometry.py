@@ -41,9 +41,10 @@ def territory_centers(config: Config) -> np.ndarray:
     ).astype(np.float32)
 
 def strongpoint_world_centers(config: Config) -> np.ndarray:
-    """World-space centers of the three strongpoint hexes."""
+    """World-space base centers, in team order (team 0's own base first)."""
     matches = (TERRITORY_COORDINATES[:, None] == STRONGPOINT_CENTERS[None]).all(-1)
-    return territory_centers(config)[matches.any(-1)]
+    indices = [int(np.flatnonzero(matches[:, i])[0]) for i in range(len(STRONGPOINT_CENTERS))]
+    return territory_centers(config)[indices]
 
 def territory_indices(position: np.ndarray, config: Config) -> np.ndarray:
     """Map world positions to their closest valid axial territory tile."""

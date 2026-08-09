@@ -11,14 +11,14 @@ import warp as wp
 from muster.sim import (
     INFLUENCE_FIXED_SCALE,
     INFLUENCE_NEUTRAL_FIXED,
-    TERRITORY_WEIGHTS,
+    TEAM_TERRITORY_WEIGHTS,
     TERRITORY_CELLS,
     TERRITORY_INITIAL_OWNER,
     TERRITORY_LOOKUP,
     TERRITORY_LOOKUP_Q_DIAMETER,
     TERRITORY_LOOKUP_Q_RADIUS,
     TERRITORY_LOOKUP_R_RADIUS,
-    TERRITORY_TOTAL_WEIGHT,
+    TEAM_TOTAL_WEIGHT,
     Config,
     CpuSimulator,
     territory_centers,
@@ -792,10 +792,10 @@ def _finish_step(
     advantage = float(0.0)
     base = env * p.territory_cells
     for cell in range(p.territory_cells):
-        weight = float(territory_weights[cell])
-        advantage += weight * (
-            share[(base + cell) * 2] - share[(base + cell) * 2 + 1]
-        )
+        weight_0 = float(territory_weights[cell])
+        weight_1 = float(territory_weights[p.territory_cells + cell])
+        advantage += weight_0 * share[(base + cell) * 2]
+        advantage -= weight_1 * share[(base + cell) * 2 + 1]
     integral = advantage_integral[env] + advantage / p.territory_total_weight
     advantage_integral[env] = integral
     next_step = step_count[env] + 1
@@ -881,7 +881,7 @@ class GpuSimulator:
             self.num_envs * TERRITORY_CELLS * 2, dtype=float, device=self.device
         )
         self.territory_weights = wp.array(
-            TERRITORY_WEIGHTS, dtype=wp.int32, device=self.device
+            TEAM_TERRITORY_WEIGHTS.reshape(-1), dtype=wp.int32, device=self.device
         )
 
         self.team = wp.empty(self.total_soldiers, dtype=wp.int32, device=self.device)
@@ -963,7 +963,7 @@ class GpuSimulator:
         p.slant_ny = 1.5 / slant_norm
         p.territory_cells = TERRITORY_CELLS
         p.territory_control_sigma = c.control_radius * 0.5
-        p.territory_total_weight = float(TERRITORY_TOTAL_WEIGHT)
+        p.territory_total_weight = float(TEAM_TOTAL_WEIGHT)
         p.initial_health = c.initial_health
         return p
 

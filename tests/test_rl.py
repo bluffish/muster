@@ -40,8 +40,8 @@ def test_presence_control_is_symmetric_and_in_local_state():
         TERRITORY_CELLS,
         TERRITORY_COORDINATES,
         TERRITORY_INITIAL_OWNER,
-        TERRITORY_TOTAL_WEIGHT,
-        TERRITORY_WEIGHTS,
+        TEAM_TERRITORY_WEIGHTS,
+        TEAM_TOTAL_WEIGHT,
         Config,
         territory_centers,
     )
@@ -56,7 +56,8 @@ def test_presence_control_is_symmetric_and_in_local_state():
         initial_territory, torch.zeros_like(initial_territory)
     )
     expected_fraction = (
-        TERRITORY_WEIGHTS[TERRITORY_INITIAL_OWNER == 0].sum() / TERRITORY_TOTAL_WEIGHT
+        TEAM_TERRITORY_WEIGHTS[0][TERRITORY_INITIAL_OWNER == 0].sum()
+        / TEAM_TOTAL_WEIGHT
     )
     cell_owner = state.owners[:, None].expand(-1, 2, -1).gather(2, state.cells.long())
     assert (cell_owner[:, 0] == 0).all() and (cell_owner[:, 1] == 1).all()
@@ -110,14 +111,14 @@ def test_strongpoint_control_dominates_equal_plain_control():
     cell = {tuple(value): index for index, value in enumerate(TERRITORY_COORDINATES)}
     centers = territory_centers(config)
     env = RLEnv(config, device=device)
-    env.sim.reset({"position": centers[[cell[(1, 0)], cell[(10, 0)]]]})
+    env.sim.reset({"position": centers[[cell[(13, -6)], cell[(-5, 2)]]]})
     env.observe()
     actions = torch.zeros((1, 2, 1, 4), device=env.device)
     _, facts = env.step(actions, reset_done=False)
 
-    # Both soldiers project similar-sized discs, but only the first covers
-    # the 7-tile center strongpoint cluster (weight 30 each).
-    assert float(facts["territory"][0, 0] - facts["territory"][0, 1]) > 120 / 1156
+    # Both soldiers project similar-sized plain-ground discs, but only the
+    # first stands on its scoring target: the enemy (east) base.
+    assert float(facts["territory"][0, 0] - facts["territory"][0, 1]) > 0.05
     assert facts["done"].bool().all() and (facts["winner"] == 0).all()
 
 
@@ -140,6 +141,7 @@ def test_mappo_policy_and_value_heads_are_per_soldier():
     torch = pytest.importorskip("torch")
     pytest.importorskip("warp")
     from policy import CHECKPOINT_VERSION, Policy
+    from simulator import TERRITORY_CELLS
 
     state, _ = _synthetic_state(torch)
     policy = Policy(hidden_size=32, entity_size=8, tile_size=16)
@@ -153,7 +155,8 @@ def test_mappo_policy_and_value_heads_are_per_soldier():
     assert policy.entity_output.out_features == 2 * 8
     assert policy.attention_heads == 4
     assert policy.global_tile_encoder[0].in_features == 2 * 8 + 8
-    assert policy.cell_value.count_nonzero() == 21
+    assert policy.cell_value.shape[0] == 2
+    assert policy.cell_value.count_nonzero() == 2 * (TERRITORY_CELLS - 7)
     assert actions.shape == (1, 2, 12, 4)
     assert values.shape == (1, 2, 12)
 
@@ -806,9 +809,10 @@ def test_nearest_charge_occupies_strongpoints_without_enemies():
     strongpoints = strongpoint_world_centers(config)
     positions = wp.to_torch(env.sim.position).cpu().numpy().reshape(4, 2)
     for soldier in (2, 3):
-        deltas = strongpoints - positions[soldier]
-        nearest = deltas[int(np.argmin((deltas * deltas).sum(-1)))]
-        expected = nearest / np.linalg.norm(nearest)
+        # Soldiers 2-3 are team 1: with no living enemies they march on the
+        # enemy (west) base, the only ground they can score on.
+        target = strongpoints[0] - positions[soldier]
+        expected = target / np.linalg.norm(target)
         np.testing.assert_allclose(world[0, soldier, :2], expected, rtol=1e-4, atol=1e-5)
         np.testing.assert_allclose(world[0, soldier, 2:], expected, rtol=1e-4, atol=1e-5)
     assert not world[0, :2].any()
@@ -822,7 +826,8 @@ def test_nearest_charge_holds_inside_a_strongpoint():
 
     device = "cuda" if torch.cuda.is_available() and wp.is_cuda_available() else "cpu"
     config = Config(soldiers_per_team=1, maximum_episode_seconds=0.1)
-    center = strongpoint_world_centers(config)[1]
+    # The lone team-1 soldier already stands on its target, the west base.
+    center = strongpoint_world_centers(config)[0]
     env = RLEnv(config, num_envs=1, device=device)
     env.sim.reset(
         {
@@ -1150,14 +1155,14 @@ def test_score_features_are_own_signed_and_accumulate():
     cell = {tuple(value): index for index, value in enumerate(TERRITORY_COORDINATES)}
     centers = territory_centers(config)
     env = RLEnv(config, device=device)
-    env.sim.reset({"position": centers[[cell[(1, 0)], cell[(10, 0)]]]})
+    env.sim.reset({"position": centers[[cell[(13, -6)], cell[(-5, 2)]]]})
     env.observe()
     actions = torch.zeros((1, 2, 1, 4), device=env.device)
 
     state, facts = env.step(actions)
     advantage = state.features[..., 11].float()
-    # Own-signed: the strongpoint holder sees a positive score, its opponent
-    # the mirror-negative of the same magnitude.
+    # Own-signed: the team standing on its scoring target (the enemy base)
+    # sees a positive score, its opponent the mirror-negative magnitude.
     assert float(advantage[0, 0, 0]) > 0.1
     torch.testing.assert_close(
         advantage[0, 0, 0], -advantage[0, 1, 0], rtol=0, atol=5e-3

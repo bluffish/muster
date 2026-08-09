@@ -11,7 +11,7 @@ import warp as wp
 
 from muster.sim import (
     TERRITORY_CELLS,
-    TERRITORY_TOTAL_WEIGHT,
+    TEAM_TOTAL_WEIGHT,
     Config,
     strongpoint_world_centers,
     territory_centers,
@@ -187,9 +187,10 @@ def _count_territory(
     index = wp.tid()
     env = index // p.territory_cells
     cell = index - env * p.territory_cells
-    weight = float(weights[cell]) / p.territory_total_weight
-    wp.atomic_add(territory, env * 2, weight * share[index * 2])
-    wp.atomic_add(territory, env * 2 + 1, weight * share[index * 2 + 1])
+    weight_0 = float(weights[cell]) / p.territory_total_weight
+    weight_1 = float(weights[p.territory_cells + cell]) / p.territory_total_weight
+    wp.atomic_add(territory, env * 2, weight_0 * share[index * 2])
+    wp.atomic_add(territory, env * 2 + 1, weight_1 * share[index * 2 + 1])
 
 
 @wp.kernel
@@ -346,19 +347,13 @@ def _nearest_enemy_actions(
                 closest = other
                 closest_distance = distance
 
-    # With no living enemy, occupy the nearest strongpoint instead of halting;
-    # a halted opponent lets territory painted before annihilation stand.
+    # With no living enemy, march on the enemy base: under assault scoring
+    # (rules 0.11) that is the only ground worth taking.
     target = position[index]
     if closest >= 0:
         target = position[closest]
     else:
-        best_distance = float(1.0e30)
-        for point in range(strongpoints.shape[0]):
-            delta = strongpoints[point] - position[index]
-            distance = wp.dot(delta, delta)
-            if distance < best_distance:
-                best_distance = distance
-                target = strongpoints[point]
+        target = strongpoints[1 - own_team]
 
     offset = target - position[index]
     distance = wp.dot(offset, offset)
@@ -534,7 +529,7 @@ class RLEnv:
         p.world_width = c.world_width
         p.world_height = c.world_height
         p.territory_cells = TERRITORY_CELLS
-        p.territory_total_weight = float(TERRITORY_TOTAL_WEIGHT)
+        p.territory_total_weight = float(TEAM_TOTAL_WEIGHT)
         p.maximum_decision_steps = c.maximum_decision_steps
         return p
 

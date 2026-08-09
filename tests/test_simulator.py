@@ -3,14 +3,15 @@ import pytest
 
 from simulator import (
     ARENA_NORMALS,
+    BASE_CELLS_BY_TEAM,
+    BASE_WEIGHT,
     STRONGPOINT_CELLS,
     STRONGPOINT_CENTERS,
-    STRONGPOINT_WEIGHT,
+    TEAM_TERRITORY_WEIGHTS,
+    TEAM_TOTAL_WEIGHT,
     TERRITORY_CELLS,
     TERRITORY_COORDINATES,
     TERRITORY_INITIAL_OWNER,
-    TERRITORY_TOTAL_WEIGHT,
-    TERRITORY_WEIGHTS,
     Config,
     CpuSimulator,
     arena_contains,
@@ -77,14 +78,16 @@ def test_hex_territory_starts_balanced_with_a_neutral_center_line():
     assert np.count_nonzero(TERRITORY_INITIAL_OWNER == 0) == 271
     assert np.count_nonzero(TERRITORY_INITIAL_OWNER == 1) == 271
     assert np.count_nonzero(TERRITORY_INITIAL_OWNER == -1) == 19
-    assert STRONGPOINT_CENTERS.tolist() == [[0, -6], [0, 0], [0, 6]]
-    assert len(STRONGPOINT_CELLS) == 21
-    assert np.count_nonzero(TERRITORY_WEIGHTS == STRONGPOINT_WEIGHT) == 21
-    assert TERRITORY_TOTAL_WEIGHT == 540 + 21 * STRONGPOINT_WEIGHT
-    weighted = [
-        TERRITORY_WEIGHTS[TERRITORY_INITIAL_OWNER == team].sum() for team in (0, 1)
-    ]
-    assert weighted == [265 + 6 * STRONGPOINT_WEIGHT] * 2
+    assert STRONGPOINT_CENTERS.tolist() == [[-13, 7], [13, -6]]
+    assert len(STRONGPOINT_CELLS) == 14
+    for team in (0, 1):
+        own = BASE_CELLS_BY_TEAM[team]
+        enemy = BASE_CELLS_BY_TEAM[1 - team]
+        assert len(own) == 7 and len(enemy) == 7
+        assert (TEAM_TERRITORY_WEIGHTS[team, own] == 0).all()
+        assert (TEAM_TERRITORY_WEIGHTS[team, enemy] == BASE_WEIGHT).all()
+    assert TEAM_TOTAL_WEIGHT == (TERRITORY_CELLS - 14) + 7 * BASE_WEIGHT
+    assert TEAM_TERRITORY_WEIGHTS[0].sum() == TEAM_TERRITORY_WEIGHTS[1].sum()
     config = Config()
     np.testing.assert_array_equal(
         territory_indices(territory_centers(config), config),
@@ -178,10 +181,11 @@ def test_timeout_winner_integrates_weighted_control():
     config = Config(soldiers_per_team=1, maximum_episode_seconds=0.1)
     centers = territory_centers(config)
     # Full health on both sides: since rules 0.8 influence is health-weighted,
-    # and this test isolates strongpoint weighting, not wounding.
+    # and this test isolates target scoring, not wounding. Team 0 sits on its
+    # target (the east base); team 1 holds plain ground far from its own.
     state = {
         "position": np.array(
-            [centers[territory_cell(1, 0)], centers[territory_cell(10, 0)]], np.float32
+            [centers[territory_cell(13, -6)], centers[territory_cell(-5, 2)]], np.float32
         ),
     }
     actions = np.zeros((1, 2, 4), np.float32)
@@ -190,9 +194,9 @@ def test_timeout_winner_integrates_weighted_control():
     cpu.step(actions)
     assert cpu.done[0] and cpu.winner[0] == 0
     assert cpu.advantage_integral[0] > 0
-    owned_0 = int(TERRITORY_WEIGHTS[cpu.territory_owner[0] == 0].sum())
-    owned_1 = int(TERRITORY_WEIGHTS[cpu.territory_owner[0] == 1].sum())
-    assert owned_0 > 200 and 0 < owned_1 < 100
+    owned_0 = int(TEAM_TERRITORY_WEIGHTS[0][cpu.territory_owner[0] == 0].sum())
+    owned_1 = int(TEAM_TERRITORY_WEIGHTS[1][cpu.territory_owner[0] == 1].sum())
+    assert owned_0 > 1000 and 0 < owned_1 < 100
 
     wp = pytest.importorskip("warp")
     from simulator_gpu import GpuSimulator
@@ -213,11 +217,13 @@ def test_timeout_winner_integrates_weighted_control():
 
 
 def test_strongpoint_control_outweighs_wider_plain_control():
+    # Assault scoring: team 0 standing on the enemy (east) base outscores
+    # team 1 holding an equally-sized bubble of plain ground.
     config = Config(soldiers_per_team=1, maximum_episode_seconds=0.1)
     centers = territory_centers(config)
     state = {
         "position": np.array(
-            [centers[territory_cell(0, 0)], centers[territory_cell(10, 0)]], np.float32
+            [centers[territory_cell(13, -6)], centers[territory_cell(-5, 2)]], np.float32
         ),
     }
     actions = np.zeros((1, 2, 4), np.float32)
@@ -362,12 +368,12 @@ def test_dense_warp_contacts_are_side_and_index_order_invariant():
     result = sim.numpy_state()
     scores = np.array(
         [
-            [int(TERRITORY_WEIGHTS[owner == team].sum()) for team in (0, 1)]
+            [int(TEAM_TERRITORY_WEIGHTS[team][owner == team].sum()) for team in (0, 1)]
             for owner in result["territory_owner"]
         ]
     )
     expected = [
-        int(TERRITORY_WEIGHTS[TERRITORY_INITIAL_OWNER == team].sum())
+        int(TEAM_TERRITORY_WEIGHTS[team][TERRITORY_INITIAL_OWNER == team].sum())
         for team in (0, 1)
     ]
     del expected

@@ -16,7 +16,7 @@ from muster.sim import (
     TERRITORY_COORDINATES,
     TERRITORY_COLUMN_EXTENT,
     TERRITORY_ROW_EXTENT,
-    TERRITORY_WEIGHTS,
+    TEAM_TERRITORY_WEIGHTS,
     territory_neighborhood,
 )
 
@@ -84,10 +84,12 @@ class Policy(nn.Module):
             ),
             persistent=False,
         )
-        weights = torch.from_numpy(TERRITORY_WEIGHTS).float()
+        # Per-team scoring maps (assault rules): each team's view of what a
+        # cell is worth to itself, normalized to [0, 1]. Row t is team t.
+        weights = torch.from_numpy(TEAM_TERRITORY_WEIGHTS).float()
         self.register_buffer(
             "cell_value",
-            (weights - weights.min()) / (weights.max() - weights.min()).clamp_min(1),
+            weights / weights.max().clamp_min(1),
             persistent=False,
         )
 
@@ -336,8 +338,11 @@ class Policy(nn.Module):
         enemy_owner = (owners == 1 - team).to(encoded.dtype).unsqueeze(-1)
         neutral_owner = (owners == -1).to(encoded.dtype).unsqueeze(-1)
         valid = (neighbors != TERRITORY_CELLS)
-        value_pad = torch.cat((self.cell_value, self.cell_value.new_zeros(1)))
-        cell_value = value_pad[neighbors].to(encoded.dtype).unsqueeze(-1)
+        value_pad = torch.cat(
+            (self.cell_value, self.cell_value.new_zeros((2, 1))), dim=1
+        )
+        value_team = torch.arange(teams, device=neighbors.device).view(1, teams, 1, 1)
+        cell_value = value_pad[value_team, neighbors].to(encoded.dtype).unsqueeze(-1)
 
         offset_x = self.offsets[:, 0].view(1, 1, 1, local_tiles)
         offset_x = offset_x * self.team_x.view(1, teams, 1, 1)
@@ -411,8 +416,8 @@ class Policy(nn.Module):
         coordinates = torch.stack(
             (x.expand(batch, -1, -1), y.expand(-1, teams, -1)), dim=-1
         ).to(ally_mean.dtype)
-        cell_value = self.cell_value.view(1, 1, cells, 1).expand(
-            batch, teams, -1, -1
+        cell_value = self.cell_value.view(1, teams, cells, 1).expand(
+            batch, -1, -1, -1
         ).to(ally_mean.dtype)
         count_scale = math.log1p(state.features.shape[2])
         global_tiles = self.global_tile_encoder(

@@ -14,8 +14,8 @@ from muster.sim.constants import (
     INFLUENCE_NEUTRAL_FIXED,
     TERRITORY_CELLS,
     TERRITORY_INITIAL_OWNER,
-    TERRITORY_TOTAL_WEIGHT,
-    TERRITORY_WEIGHTS,
+    TEAM_TERRITORY_WEIGHTS,
+    TEAM_TOTAL_WEIGHT,
 )
 from muster.sim.geometry import arena_contains, territory_centers, territory_indices
 
@@ -476,12 +476,10 @@ class CpuSimulator:
     def _accumulate_control(self) -> None:
         for env in np.flatnonzero(~self.done):
             advantage = float(
-                (
-                    TERRITORY_WEIGHTS
-                    * (self.control_share[env, :, 0] - self.control_share[env, :, 1])
-                ).sum()
+                (TEAM_TERRITORY_WEIGHTS[0] * self.control_share[env, :, 0]).sum()
+                - (TEAM_TERRITORY_WEIGHTS[1] * self.control_share[env, :, 1]).sum()
             )
-            self.advantage_integral[env] += advantage / TERRITORY_TOTAL_WEIGHT
+            self.advantage_integral[env] += advantage / TEAM_TOTAL_WEIGHT
 
     def _finish_episodes(self) -> None:
         for env in range(self.num_envs):

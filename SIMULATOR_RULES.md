@@ -2,7 +2,7 @@
 
 Status: normative specification for the current simulator implementation
 
-Version: 0.10
+Version: 0.11
 
 Scope: world dynamics, collisions, combat, terrain, and episode termination
 
@@ -550,20 +550,24 @@ are recomputed from living positions every step. (The initial symmetric
 ownership constant survives only as the pre-first-step reset value shown at
 frame zero, and control shares are zero until the first step.)
 
-Three non-overlapping radius-1 strongpoints are centered at axial coordinates
-`(0, -6)`, `(0, 0)`, and `(0, 6)`. Each contains seven tiles. Every strongpoint
-tile has territory weight `90` (raised from `30` in version 0.9); every other
-tile has weight `1`, for a total territory weight of `2430`. Strongpoints
-therefore carry ~78% of the score: holding the contested center decisively
-outweighs out-spreading an opponent, so territory can no longer be won while
-avoiding contact. (Measured at weight 30, a scripted strongpoint-seeking
-charger beat a dispersing policy in only 6 of 32 games; at 90 its mean
-control advantage plateaus at +0.25.)
+Assault scoring (version 0.11) replaces the shared strongpoints with one
+radius-1 base per team, at axial centers `(-13, 7)` (team 0's, west) and
+`(13, -6)` (team 1's, east) — an x-mirror-symmetric pair, each seven tiles,
+deep inside its owner's half. Scoring is per-team: team `t`'s cell weights
+`w_t` are `250` on each tile of the ENEMY base, `0` on its own base, and
+`1` on plain ground, for a per-team total weight of `2297`. The enemy base
+is therefore ~76% of a team's attainable score: a team scores almost
+exclusively by projecting influence onto the base behind the opposing
+army, and its own base matters only through denial — defenders standing
+on it enlarge the influence denominator and shrink what the attacker
+banks. No peaceful arrangement is an equilibrium: mutual camping scores
+zero for both and loses to any raid, and a mutual base-swap loses to
+pulling back a few defenders.
 
 Scoring is the time integral of held control. After each decision step's
 influence update, every environment accumulates
-`sum_cells(weight * (share_0 - share_1)) / total_weight` into its advantage
-integral. An episode always runs for
+`sum_cells(w_0 * share_0 - w_1 * share_1) / team_total_weight` into its
+advantage integral. An episode always runs for
 `maximum_episode_seconds / decision_dt` decision steps, including when a team
 has no living soldiers. At the end, a positive integral is a team-0 win, a
 negative one a team-1 win, and a magnitude within `1e-9` is a draw. Health,
