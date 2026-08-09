@@ -75,7 +75,7 @@ def test_browser_replay_contains_territory_overlay(tmp_path):
     assert 'targetFrameMs=1000/(mobile?20:30)' in html
     assert "function prepareTerritoryGeometry" in html
     assert "function scheduleDraw" in html
-    assert "100dvh" in html
+    assert "flex:1; min-height:0" in html
     assert '"frame_count":1' in html
     assert '"territory_i8":' in html
     assert '"frames":' not in html
