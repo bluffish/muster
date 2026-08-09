@@ -3,33 +3,66 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Simulator replay</title>
 <style>
-  html,body { width:100%; height:100%; margin:0; overflow:hidden; overscroll-behavior:none; background:#141414; color:#ddd; font:14px monospace; }
-  #tools { height:42px; display:flex; align-items:center; gap:10px; padding:0 12px; }
-  #frame { flex:1; min-width:60px; }
-  button,select,input { font:inherit; }
-  #update,#matchup,#status,#territoryStatus { white-space:nowrap; }
-  #inspect { position:fixed; right:10px; top:52px; background:rgba(10,14,18,.85); border:1px solid #444; padding:6px 9px; border-radius:4px; pointer-events:none; z-index:5; }
-  canvas { display:block; width:100%; height:calc(100vh - 42px); height:calc(100dvh - 42px); touch-action:none; }
+  :root {
+    --bg:#0e1116; --panel:#11161d; --border:#232c38; --raised:#1c2530;
+    --text:#c9d4df; --dim:#8b98a5; --blue:#35a7ff; --red:#ff4d5f; --gold:#ffc440;
+  }
+  html,body { width:100%; height:100%; margin:0; overflow:hidden; overscroll-behavior:none; background:var(--bg); color:var(--text); font:13px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+  body { display:flex; flex-direction:column; }
+  #top,#dock { display:flex; align-items:center; gap:8px; padding:7px 12px; background:var(--panel); }
+  #top { border-bottom:1px solid var(--border); }
+  #dock { border-top:1px solid var(--border); }
+  #brand { font-weight:700; letter-spacing:.24em; color:var(--dim); font-size:12px; user-select:none; }
+  button,select { font:inherit; color:var(--dim); background:transparent; border:1px solid var(--border); border-radius:6px; padding:4px 10px; cursor:pointer; white-space:nowrap; }
+  button:hover,select:hover { color:var(--text); border-color:#38455a; }
+  select,option { background:#151b23; color:var(--text); }
+  button.on { color:var(--text); background:var(--raised); border-color:#3d4c5e; }
+  #play { width:36px; text-align:center; padding:4px 0; color:var(--text); }
+  #current.fresh { color:var(--gold); border-color:#5a4a22; }
+  #update { white-space:nowrap; color:var(--dim); }
+  #matchup { color:var(--dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #spacer { flex:1; }
+  .chip { white-space:nowrap; padding:3px 9px; border:1px solid var(--border); border-radius:999px; background:#141a22; color:var(--dim); font-variant-numeric:tabular-nums; }
+  .chip.blue { color:var(--blue); border-color:#1d3f5c; }
+  .chip.red { color:var(--red); border-color:#54242c; }
+  #scorebar { display:flex; height:5px; background:#1d242e; transition:opacity .2s; }
+  #scorebar.off { opacity:.25; }
+  #scoreBlue { background:var(--blue); width:0; transition:width .25s linear; }
+  #scoreRed { background:var(--red); width:0; margin-left:auto; transition:width .25s linear; }
+  #frame { flex:1; min-width:60px; accent-color:var(--blue); }
+  #time { color:var(--dim); white-space:nowrap; font-variant-numeric:tabular-nums; }
+  canvas { display:block; flex:1; min-height:0; width:100%; touch-action:none; }
+  #inspect { position:fixed; right:10px; top:48px; background:rgba(17,22,29,.92); border:1px solid var(--border); border-left:3px solid var(--dim); padding:6px 10px; border-radius:6px; pointer-events:none; z-index:5; }
+  #inspect.blue { border-left-color:var(--blue); }
+  #inspect.red { border-left-color:var(--red); }
   @media (max-width:700px), (pointer:coarse) {
-    #tools { gap:5px; padding:0 6px; }
+    #top,#dock { gap:5px; padding:5px 6px; }
     #frame { min-width:24px; }
-    #status,#territoryStatus,#trails { display:none; }
-    button,select { padding:3px 5px; font-size:12px; }
+    #brand,#time,#trails,#delta { display:none; }
+    button,select { padding:3px 6px; font-size:12px; }
+    .chip { padding:2px 6px; }
   }
 </style>
-<div id="tools">
-  <button id="current">load current</button>
-  <button id="play">pause</button>
-  <button id="territory">territory on (T)</button>
-  <button id="trails">trails off (R)</button>
+<div id="top">
+  <span id="brand">MUSTER</span>
   <span id="update"><label for="updates">update</label> <select id="updates"></select></span>
+  <button id="current">load current</button>
   <span id="matchup"></span>
+  <span id="spacer"></span>
+  <span class="chip blue" id="chip0">●</span>
+  <span class="chip red" id="chip1">●</span>
+  <span class="chip" id="delta"></span>
+</div>
+<div id="scorebar"><div id="scoreBlue"></div><div id="scoreRed"></div></div>
+<canvas id="world"></canvas>
+<div id="dock">
+  <button id="play">❚❚</button>
+  <span id="time"></span>
   <input id="frame" type="range" min="0" value="0" step="any">
   <select id="speed"><option value=".25">0.25x</option><option value=".5">0.5x</option><option value="1" selected>1x</option><option value="2">2x</option><option value="4">4x</option></select>
-  <span id="status"></span>
-  <span id="territoryStatus"></span>
+  <button id="territory" class="on">territory (T)</button>
+  <button id="trails">trails (R)</button>
 </div>
-<canvas id="world"></canvas>
 <div id="inspect" hidden></div>
 <script>
 const replay=__REPLAY__, cfg=replay.config, teams=replay.team;
@@ -51,10 +84,14 @@ const quantizedMax=65535, angleScale=Math.PI/32767;
 const canvas=document.querySelector("#world"), ctx=canvas.getContext("2d",{alpha:false,desynchronized:true});
 const current=document.querySelector("#current");
 const slider=document.querySelector("#frame"), play=document.querySelector("#play");
-const speed=document.querySelector("#speed"), status=document.querySelector("#status");
+const speed=document.querySelector("#speed"), timeText=document.querySelector("#time");
 const update=document.querySelector("#update"), updates=document.querySelector("#updates");
 const matchup=document.querySelector("#matchup");
-const territoryButton=document.querySelector("#territory"), territoryStatus=document.querySelector("#territoryStatus");
+const territoryButton=document.querySelector("#territory");
+const scorebar=document.querySelector("#scorebar");
+const scoreBlue=document.querySelector("#scoreBlue"), scoreRed=document.querySelector("#scoreRed");
+const chip0=document.querySelector("#chip0"), chip1=document.querySelector("#chip1");
+const deltaChip=document.querySelector("#delta");
 const hexRadius=cfg.territory_radius||0, hexArena=cfg.arena_shape==="hex";
 const territoryWidth=cfg.territory_width||32, territoryHeight=cfg.territory_height||18;
 const territoryCells=hexRadius?cfg.territory_cells:territoryWidth*territoryHeight;
@@ -99,6 +136,7 @@ const trailsButton=document.querySelector("#trails");
 const inspect=document.querySelector("#inspect");
 let cursor=0, playing=lastFrame>0, showTerritory=true, previous=performance.now();
 let dirty=true, lastDraw=0, animationRequest=0, territoryKey="", territoryText="";
+let scoreShare0=0, scoreShare1=0, scoreKey="";
 let territoryGeometryKey="", territoryBoard=null, territoryPaths=[];
 slider.max=lastFrame;
 
@@ -128,8 +166,10 @@ function refreshUpdates() {
     .then(response=>response.ok?response.json():Promise.reject())
     .then(manifest=>{
       setUpdateChoices(Array.isArray(manifest.updates)?manifest.updates:[]);
-      if (Number.isInteger(manifest.current)&&manifest.current!==replay.update)
+      if (Number.isInteger(manifest.current)&&manifest.current!==replay.update) {
         setText(current,(mobile?"current ":"load current ")+manifest.current);
+        current.classList.add("fresh");
+      }
     })
     .catch(()=>{});
 }
@@ -214,7 +254,8 @@ function updateTerritory(frameIndex,pixelWidth,pixelHeight) {
       }
     }
     const advantage=(territory0-territory1)/territoryTotalWeight;
-    territoryText="blue "+(territory0/territoryTotalWeight).toFixed(3)+" | red "+(territory1/territoryTotalWeight).toFixed(3)+" | delta "+(advantage>=0?"+":"")+advantage.toFixed(3);
+    scoreShare0=territory0/territoryTotalWeight; scoreShare1=territory1/territoryTotalWeight;
+    territoryText="blue "+scoreShare0.toFixed(3)+" | red "+scoreShare1.toFixed(3)+" | delta "+(advantage>=0?"+":"")+advantage.toFixed(3);
     territoryContext.restore();
     return;
   }
@@ -238,7 +279,8 @@ function updateTerritory(frameIndex,pixelWidth,pixelHeight) {
       else { territoryHexPath(territoryContext,territoryHexes[cell],pixelWidth,pixelHeight); territoryContext.fill(); }
     }
     const advantage=(territory0-territory1)/territoryTotalWeight;
-    territoryText="blue "+(territory0/territoryTotalWeight).toFixed(3)+" | red "+(territory1/territoryTotalWeight).toFixed(3)+" | delta "+(advantage>=0?"+":"")+advantage.toFixed(3);
+    scoreShare0=territory0/territoryTotalWeight; scoreShare1=territory1/territoryTotalWeight;
+    territoryText="blue "+scoreShare0.toFixed(3)+" | red "+scoreShare1.toFixed(3)+" | delta "+(advantage>=0?"+":"")+advantage.toFixed(3);
     territoryContext.restore();
     return;
   }
@@ -292,6 +334,7 @@ function updateTerritory(frameIndex,pixelWidth,pixelHeight) {
     }
   }
   const advantage=territory0-territory1;
+  scoreShare0=Math.min(1,territory0); scoreShare1=Math.min(1,territory1);
   territoryText="blue "+territory0.toFixed(3)+" | red "+territory1.toFixed(3)+" | delta "+(advantage>=0?"+":"")+advantage.toFixed(3);
   territoryContext.restore();
 }
@@ -313,7 +356,7 @@ function draw() {
   const worldHeight=Math.max(1,Math.round(cfg.world_height*territoryScale));
   if (hexRadius) prepareTerritoryGeometry(worldWidth,worldHeight);
   const lower=Math.min(Math.floor(cursor),lastFrame), upper=Math.min(lower+1,lastFrame), amount=cursor-lower;
-  ctx.fillStyle="#141414"; ctx.fillRect(0,0,width,height);
+  ctx.fillStyle="#0e1116"; ctx.fillRect(0,0,width,height);
   ctx.save();
   if (hexRadius&&territoryBoard) {
     ctx.translate(left,top); ctx.scale(geometryRatio,geometryRatio); ctx.clip(territoryBoard);
@@ -323,12 +366,11 @@ function draw() {
   else if (hexArena) arenaPath(ctx,left,top,cfg.world_width*scale,cfg.world_height*scale);
   else { ctx.beginPath(); ctx.rect(left,top,cfg.world_width*scale,cfg.world_height*scale); }
   if (!(hexRadius&&territoryBoard)) ctx.clip();
-  ctx.fillStyle="#2b2b2b"; ctx.fillRect(left,top,cfg.world_width*scale,cfg.world_height*scale);
+  ctx.fillStyle="#1b222c"; ctx.fillRect(left,top,cfg.world_width*scale,cfg.world_height*scale);
   if (showTerritory) {
     updateTerritory(lower,worldWidth,worldHeight);
     ctx.drawImage(territoryCanvas,left,top,cfg.world_width*scale,cfg.world_height*scale);
-    setText(territoryStatus,territoryText);
-  } else setText(territoryStatus,"");
+  }
   if (cfg.river_width>0) {
     const x=left+(cfg.world_width-cfg.river_width)*.5*scale, y0=(cfg.world_height-cfg.bridge_width)*.5;
     ctx.fillStyle="#1e465f"; ctx.fillRect(x,bottom-y0*scale,cfg.river_width*scale,y0*scale);
@@ -344,7 +386,7 @@ function draw() {
     }
     ctx.restore();
   }
-  ctx.strokeStyle="#969696"; ctx.lineWidth=Math.max(1,dpr);
+  ctx.strokeStyle="#54637a"; ctx.lineWidth=Math.max(1,dpr);
   if (!hexRadius) {
     if (hexArena) arenaPath(ctx,left,top,cfg.world_width*scale,cfg.world_height*scale);
     else { ctx.beginPath(); ctx.rect(left,top,cfg.world_width*scale,cfg.world_height*scale); }
@@ -429,19 +471,32 @@ function draw() {
       ctx.fillStyle=teams[selected]===0?"rgba(53,167,255,.22)":"rgba(255,77,95,.22)";
       ctx.beginPath(); ctx.moveTo(x,y); ctx.arc(x,y,perceptionRadius*scale*.5,facing-Math.PI/3,facing+Math.PI/3); ctx.closePath(); ctx.fill();
       const degrees=((Math.round(screenState[selected*4+2]*180/Math.PI)%360)+360)%360;
+      inspect.className=teams[selected]===0?"blue":"red";
       inspect.textContent=(teams[selected]===0?"blue":"red")+" #"+selected+" · hp "+Math.round(health*100)+"% · facing "+degrees+"°";
       inspect.hidden=false;
     } else {
+      inspect.className=teams[selected]===0?"blue":"red";
       inspect.textContent=(teams[selected]===0?"blue":"red")+" #"+selected+" · down";
       inspect.hidden=false;
     }
   } else inspect.hidden=true;
   slider.value=Math.min(cursor,lastFrame);
-  const ending=lower===lastFrame&&Number.isInteger(replay.winner)?(replay.winner<0?" | draw":" | "+(replay.winner===0?"blue":"red")+" wins"):"";
-  setText(status,"t="+(lower*cfg.decision_dt).toFixed(1)+"s · step "+lower+"/"+lastFrame+" · blue "+alive0+" · red "+alive1+ending);
+  const ending=lower===lastFrame&&Number.isInteger(replay.winner)?(replay.winner<0?" · draw":" · "+(replay.winner===0?"blue":"red")+" wins"):"";
+  setText(timeText,"t="+(lower*cfg.decision_dt).toFixed(1)+"s · "+lower+"/"+lastFrame+ending);
+  setText(chip0,"● "+alive0); setText(chip1,"● "+alive1);
+  const shareKey=scoreShare0.toFixed(3)+":"+scoreShare1.toFixed(3);
+  if (scoreKey!==shareKey) {
+    scoreKey=shareKey;
+    scoreBlue.style.width=(scoreShare0*100).toFixed(1)+"%";
+    scoreRed.style.width=(scoreShare1*100).toFixed(1)+"%";
+    scorebar.title=territoryText;
+    const advantage=scoreShare0-scoreShare1;
+    setText(deltaChip,"Δ "+(advantage>=0?"+":"")+advantage.toFixed(3));
+    deltaChip.style.color=advantage>0.001?"var(--blue)":advantage<-0.001?"var(--red)":"";
+  }
   if (lower===lastFrame&&Number.isInteger(replay.winner)) {
     const verdict=replay.winner<0?"DRAW":replay.winner===0?"BLUE WINS":"RED WINS";
-    ctx.font="bold "+Math.round(26*dpr)+"px monospace"; ctx.textAlign="center";
+    ctx.font="bold "+Math.round(26*dpr)+"px ui-monospace,Menlo,Consolas,monospace"; ctx.textAlign="center";
     ctx.fillStyle=replay.winner===0?"#35a7ff":replay.winner===1?"#ff4d5f":"#dddddd";
     ctx.globalAlpha=.92; ctx.fillText(verdict,width/2,Math.max(top,20*dpr)+34*dpr);
     ctx.globalAlpha=1; ctx.textAlign="left";
@@ -464,16 +519,17 @@ function scheduleDraw() {
   if (!animationRequest&&!document.hidden) animationRequest=requestAnimationFrame(animate);
 }
 function invalidate() { dirty=true; scheduleDraw(); }
-function setPlaying(value) { playing=value && lastFrame>0; setText(play,playing?"pause":"play"); if (playing) scheduleDraw(); }
+function setPlaying(value) { playing=value && lastFrame>0; setText(play,playing?"❚❚":"▶︎"); if (playing) scheduleDraw(); }
 function toggle() { if (!playing && cursor>=lastFrame) cursor=0; setPlaying(!playing); previous=performance.now(); invalidate(); }
 function toggleTerritory() {
   showTerritory=!showTerritory;
-  setText(territoryButton,mobile?(showTerritory?"map on":"map off"):(showTerritory?"territory on (T)":"territory off (T)"));
+  territoryButton.classList.toggle("on",showTerritory);
+  scorebar.classList.toggle("off",!showTerritory);
   invalidate();
 }
 function toggleTrails() {
   showTrails=!showTrails;
-  setText(trailsButton,showTrails?"trails on (R)":"trails off (R)");
+  trailsButton.classList.toggle("on",showTrails);
   invalidate();
 }
 function resetView() { zoom=1; camX=cfg.world_width/2; camY=cfg.world_height/2; invalidate(); }
@@ -562,7 +618,7 @@ document.addEventListener("visibilitychange",()=>{
 const resized=()=>{ territoryKey=""; territoryGeometryKey=""; invalidate(); };
 if (window.ResizeObserver) new ResizeObserver(resized).observe(canvas);
 else window.addEventListener("resize",resized);
-if (mobile) { setText(current,"current"); setText(territoryButton,"map on"); }
+if (mobile) { setText(current,"current"); setText(territoryButton,"map"); }
 setPlaying(playing);
 invalidate();
 </script>
