@@ -73,8 +73,11 @@ def test_presence_control_is_symmetric_and_in_local_state():
     assert (occupied_owner == 0).all()
     enemy_owner = state.owners[0].gather(0, state.cells[0, 1].long())
     assert (enemy_owner == 1).all()
-    assert 0 < facts["territory"][0, 0] < expected_fraction
-    assert 0 < facts["territory"][0, 1] < expected_fraction
+    # The map is fully allocated between the two projections.
+    total = (facts["territory"][0, 0] + facts["territory"][0, 1]).item()
+    assert abs(total - 1.0) < 1e-3
+    assert facts["territory"][0, 0] > facts["territory"][0, 1] > 0
+    del expected_fraction
     expected_delta = facts["territory"].detach().cpu() - initial_territory
     torch.testing.assert_close(facts["territory_delta"].detach().cpu(), expected_delta)
 

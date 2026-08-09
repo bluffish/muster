@@ -9,8 +9,8 @@ import numpy as np
 import warp as wp
 
 from simulator import (
+    CONTROL_OWNERSHIP_SHARE,
     INFLUENCE_FIXED_SCALE,
-    INFLUENCE_NEUTRAL_FIXED,
     TERRITORY_WEIGHTS,
     TERRITORY_CELLS,
     TERRITORY_INITIAL_OWNER,
@@ -471,35 +471,64 @@ def _control_territory_owner(
     share: wp.array(dtype=float),
     p: _Params,
 ):
-    """Soft influence control with order-invariant fixed-point summation."""
+    """Relative force projection: log-domain influence ratio per cell."""
     index = wp.tid()
     env = index // p.territory_cells
     if done[env] != 0:
         return
     cell = index - env * p.territory_cells
     center = centers[cell]
-    fixed_0 = int(0)
-    fixed_1 = int(0)
-    scale = -0.5 / (p.territory_control_sigma * p.territory_control_sigma)
+    half_inverse = 0.5 / (p.territory_control_sigma * p.territory_control_sigma)
     base = env * p.num_soldiers
+
+    nearest_0 = float(1.0e30)
+    nearest_1 = float(1.0e30)
     for local in range(p.num_soldiers):
         soldier = base + local
         if alive[soldier] == 0:
             continue
         delta = position[soldier] - center
-        influence = wp.exp(wp.dot(delta, delta) * scale)
-        quantized = int(wp.floor(influence * float(INFLUENCE_FIXED_SCALE) + 0.5))
+        squared = wp.dot(delta, delta)
         if team[soldier] == 0:
-            fixed_0 += quantized
+            nearest_0 = wp.min(nearest_0, squared)
         else:
-            fixed_1 += quantized
-    total = float(fixed_0 + fixed_1 + INFLUENCE_NEUTRAL_FIXED)
-    share[index * 2] = float(fixed_0) / total
-    share[index * 2 + 1] = float(fixed_1) / total
+            nearest_1 = wp.min(nearest_1, squared)
+
+    summed_0 = int(0)
+    summed_1 = int(0)
+    for local in range(p.num_soldiers):
+        soldier = base + local
+        if alive[soldier] == 0:
+            continue
+        delta = position[soldier] - center
+        squared = wp.dot(delta, delta)
+        if team[soldier] == 0:
+            shifted = wp.exp(-(squared - nearest_0) * half_inverse)
+            summed_0 += int(wp.floor(shifted * float(INFLUENCE_FIXED_SCALE) + 0.5))
+        else:
+            shifted = wp.exp(-(squared - nearest_1) * half_inverse)
+            summed_1 += int(wp.floor(shifted * float(INFLUENCE_FIXED_SCALE) + 0.5))
+
+    share_0 = float(0.5)
+    if summed_0 > 0 and summed_1 > 0:
+        log_0 = -nearest_0 * half_inverse + wp.log(
+            float(summed_0) / float(INFLUENCE_FIXED_SCALE)
+        )
+        log_1 = -nearest_1 * half_inverse + wp.log(
+            float(summed_1) / float(INFLUENCE_FIXED_SCALE)
+        )
+        difference = wp.clamp(log_0 - log_1, -50.0, 50.0)
+        share_0 = 1.0 / (1.0 + wp.exp(-difference))
+    elif summed_0 > 0:
+        share_0 = 1.0
+    elif summed_1 > 0:
+        share_0 = 0.0
+    share[index * 2] = share_0
+    share[index * 2 + 1] = 1.0 - share_0
     result = int(-1)
-    if fixed_0 > fixed_1 + INFLUENCE_NEUTRAL_FIXED:
+    if share_0 > CONTROL_OWNERSHIP_SHARE:
         result = 0
-    elif fixed_1 > fixed_0 + INFLUENCE_NEUTRAL_FIXED:
+    elif 1.0 - share_0 > CONTROL_OWNERSHIP_SHARE:
         result = 1
     owner[index] = result
 

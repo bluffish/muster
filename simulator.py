@@ -51,7 +51,9 @@ TERRITORY_TOTAL_WEIGHT = int(TERRITORY_WEIGHTS.sum())
 # Influence contributions are quantized to fixed point before summation so
 # control is exactly independent of soldier iteration order.
 INFLUENCE_FIXED_SCALE = 1 << 20
-INFLUENCE_NEUTRAL_FIXED = INFLUENCE_FIXED_SCALE >> 3  # kappa = 0.125
+# A team owns a cell for display and local observation once its relative
+# control share exceeds this margin; the band between is contested.
+CONTROL_OWNERSHIP_SHARE = 0.6
 
 # Rounded axial coordinates can be one cell beyond the board near the six walls.
 # This tiny table maps those coordinates to the closest valid territory cell.
@@ -681,40 +683,59 @@ class CpuSimulator:
             self.substep_count[env] += 1
 
     def _update_territory(self) -> None:
-        """Soft influence control with order-invariant fixed-point summation.
+        """Relative force projection: the whole map is allocated by ratio.
 
-        Each living soldier contributes ``exp(-0.5 (d / sigma)^2)`` influence
-        to every cell, with ``sigma = control_radius / 2``, quantized to
-        ``INFLUENCE_FIXED_SCALE``. A team's control share is its influence
-        over the total plus the neutral mass ``kappa``; a cell displays as
-        owned when a share exceeds one half.
+        Each living soldier radiates ``exp(-0.5 (d / sigma)^2)`` influence
+        with ``sigma = control_radius / 2``. A cell's share for team ``t`` is
+        ``I_t / (I_0 + I_1)``, computed per team in the log domain (max plus
+        fixed-point sum of max-shifted terms, so summation order cannot
+        matter and distant fields never underflow). A team with no living
+        soldiers projects nothing; with both teams extinct, shares are half
+        each. Display ownership needs a share above
+        ``CONTROL_OWNERSHIP_SHARE``.
         """
         sigma = np.float32(self.config.control_radius * 0.5)
+        half_inverse = np.float32(0.5) / (sigma * sigma)
         for env in np.flatnonzero(~self.done):
-            fixed = np.zeros((2, TERRITORY_CELLS), np.int64)
+            log_influence = np.zeros((2, TERRITORY_CELLS), np.float32)
+            present = [False, False]
             living = np.flatnonzero(self.alive[env])
             for team in (0, 1):
                 members = living[self.team[env, living] == team]
-                if len(members):
-                    deltas = (
-                        self._territory_centers[:, None, :]
-                        - self.position[env, members][None, :, :]
-                    ).astype(np.float32)
-                    squared = (deltas**2).sum(-1)
-                    influence = np.exp(
-                        np.float32(-0.5) * squared / (sigma * sigma)
-                    ).astype(np.float32)
-                    fixed[team] = (
-                        np.floor(influence * INFLUENCE_FIXED_SCALE + 0.5)
-                        .astype(np.int64)
-                        .sum(axis=1)
-                    )
-            total = (fixed[0] + fixed[1] + INFLUENCE_NEUTRAL_FIXED).astype(np.float32)
-            self.control_share[env, :, 0] = fixed[0].astype(np.float32) / total
-            self.control_share[env, :, 1] = fixed[1].astype(np.float32) / total
+                if not len(members):
+                    continue
+                present[team] = True
+                deltas = (
+                    self._territory_centers[:, None, :]
+                    - self.position[env, members][None, :, :]
+                ).astype(np.float32)
+                squared = (deltas**2).sum(-1)
+                nearest = squared.min(axis=1)
+                shifted = np.exp(
+                    -(squared - nearest[:, None]) * half_inverse
+                ).astype(np.float32)
+                summed = (
+                    np.floor(shifted * INFLUENCE_FIXED_SCALE + 0.5)
+                    .astype(np.int64)
+                    .sum(axis=1)
+                )
+                log_influence[team] = -nearest * half_inverse + np.log(
+                    summed.astype(np.float32) / INFLUENCE_FIXED_SCALE
+                )
+            if present[0] and present[1]:
+                delta = np.clip(log_influence[0] - log_influence[1], -50.0, 50.0)
+                share_0 = np.float32(1.0) / (np.float32(1.0) + np.exp(-delta))
+            elif present[0]:
+                share_0 = np.ones(TERRITORY_CELLS, np.float32)
+            elif present[1]:
+                share_0 = np.zeros(TERRITORY_CELLS, np.float32)
+            else:
+                share_0 = np.full(TERRITORY_CELLS, 0.5, np.float32)
+            self.control_share[env, :, 0] = share_0
+            self.control_share[env, :, 1] = 1.0 - share_0
             owner = np.full(TERRITORY_CELLS, -1, np.int8)
-            owner[fixed[0] > fixed[1] + INFLUENCE_NEUTRAL_FIXED] = 0
-            owner[fixed[1] > fixed[0] + INFLUENCE_NEUTRAL_FIXED] = 1
+            owner[share_0 > CONTROL_OWNERSHIP_SHARE] = 0
+            owner[1.0 - share_0 > CONTROL_OWNERSHIP_SHARE] = 1
             self.territory_owner[env] = owner
 
     def _accumulate_control(self) -> None:
