@@ -39,7 +39,7 @@ args=(
     --dtype bf16
     --compile
     --compile-mode max-autotune-no-cudagraphs
-    --learning-rate 0.0003
+    --learning-rate 0.001
     --gamma 1.0
     --gae-lambda 0.941192
     --clip 0.2
