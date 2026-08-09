@@ -1,0 +1,418 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Simulator replay</title>
+<style>
+  html,body { width:100%; height:100%; margin:0; overflow:hidden; overscroll-behavior:none; background:#141414; color:#ddd; font:14px monospace; }
+  #tools { height:42px; display:flex; align-items:center; gap:10px; padding:0 12px; }
+  #frame { flex:1; min-width:60px; }
+  button,select,input { font:inherit; }
+  #update,#matchup,#status,#territoryStatus { white-space:nowrap; }
+  canvas { display:block; width:100%; height:calc(100vh - 42px); height:calc(100dvh - 42px); touch-action:none; }
+  @media (max-width:700px), (pointer:coarse) {
+    #tools { gap:5px; padding:0 6px; }
+    #frame { min-width:24px; }
+    #status,#territoryStatus { display:none; }
+    button,select { padding:3px 5px; font-size:12px; }
+  }
+</style>
+<div id="tools">
+  <button id="current">load current</button>
+  <button id="play">pause</button>
+  <button id="territory">territory on (T)</button>
+  <span id="update"><label for="updates">update</label> <select id="updates"></select></span>
+  <span id="matchup"></span>
+  <input id="frame" type="range" min="0" value="0" step="any">
+  <select id="speed"><option value=".25">0.25x</option><option value=".5">0.5x</option><option value="1" selected>1x</option><option value="2">2x</option><option value="4">4x</option></select>
+  <span id="status"></span>
+  <span id="territoryStatus"></span>
+</div>
+<canvas id="world"></canvas>
+<script>
+const replay=__REPLAY__, cfg=replay.config, teams=replay.team;
+const mobile=matchMedia("(pointer:coarse)").matches||innerWidth<=700;
+const maxDpr=mobile?1:2, targetFrameMs=1000/(mobile?20:30);
+function decode(text,Type) {
+  const raw=atob(text), bytes=new Uint8Array(raw.length);
+  for (let i=0;i<raw.length;i++) bytes[i]=raw.charCodeAt(i);
+  return new Type(bytes.buffer);
+}
+const positions=decode(replay.position_u16,Uint16Array);
+const angles=decode(replay.angle_i16,Int16Array);
+const healths=decode(replay.health_u16,Uint16Array);
+const territoryOwners=replay.territory_i8?decode(replay.territory_i8,Int8Array):null;
+const controlShares=replay.control_u8?decode(replay.control_u8,Uint8Array):null;
+delete replay.position_u16; delete replay.angle_i16; delete replay.health_u16; delete replay.territory_i8; delete replay.control_u8;
+const frameCount=replay.frame_count, soldierCount=teams.length, lastFrame=frameCount-1;
+const quantizedMax=65535, angleScale=Math.PI/32767;
+const canvas=document.querySelector("#world"), ctx=canvas.getContext("2d",{alpha:false,desynchronized:true});
+const current=document.querySelector("#current");
+const slider=document.querySelector("#frame"), play=document.querySelector("#play");
+const speed=document.querySelector("#speed"), status=document.querySelector("#status");
+const update=document.querySelector("#update"), updates=document.querySelector("#updates");
+const matchup=document.querySelector("#matchup");
+const territoryButton=document.querySelector("#territory"), territoryStatus=document.querySelector("#territoryStatus");
+const hexRadius=cfg.territory_radius||0, hexArena=cfg.arena_shape==="hex";
+const territoryWidth=cfg.territory_width||32, territoryHeight=cfg.territory_height||18;
+const territoryCells=hexRadius?cfg.territory_cells:territoryWidth*territoryHeight;
+const strongpointCells=Array.isArray(cfg.strongpoint_cells)?cfg.strongpoint_cells:[];
+const strongpointSet=new Set(strongpointCells), strongpointWeight=cfg.strongpoint_weight||1;
+const territoryTotalWeight=territoryCells+strongpointCells.length*(strongpointWeight-1);
+const territoryCellWeight=cell=>strongpointSet.has(cell)?strongpointWeight:1;
+const territoryHexes=[];
+if (hexRadius) for (let q=-hexRadius;q<=hexRadius;q++) {
+  const first=Math.max(-hexRadius,-q-hexRadius), last=Math.min(hexRadius,-q+hexRadius);
+  for (let r=first;r<=last;r++) territoryHexes.push([q,r]);
+}
+const territoryDensity=new Float32Array(2*territoryCells);
+const territoryCanvas=document.createElement("canvas"), territoryContext=territoryCanvas.getContext("2d",{desynchronized:true});
+const territoryFrame=new Uint16Array(frameCount);
+if (controlShares) for (let frame=1;frame<frameCount;frame++) {
+  let changed=false, base=frame*territoryCells*2, previousBase=base-territoryCells*2;
+  for (let i=0;i<territoryCells*2&&!changed;i++) changed=controlShares[base+i]!==controlShares[previousBase+i];
+  territoryFrame[frame]=changed?frame:territoryFrame[frame-1];
+}
+else if (territoryOwners) for (let frame=1;frame<frameCount;frame++) {
+  let changed=false, base=frame*territoryCells, previousBase=base-territoryCells;
+  for (let cell=0;cell<territoryCells&&!changed;cell++) changed=territoryOwners[base+cell]!==territoryOwners[previousBase+cell];
+  territoryFrame[frame]=changed?frame:territoryFrame[frame-1];
+}
+const screenState=new Float32Array(soldierCount*4);
+let cursor=0, playing=lastFrame>0, showTerritory=true, previous=performance.now();
+let dirty=true, lastDraw=0, animationRequest=0, territoryKey="", territoryText="";
+let territoryGeometryKey="", territoryBoard=null, territoryPaths=[];
+slider.max=lastFrame;
+
+function setText(element,value) { if (element.textContent!==value) element.textContent=value; }
+
+function setMatchup() {
+  if (!Number.isInteger(replay.learner_team)||!replay.opponent_mode) { matchup.hidden=true; return; }
+  const opponent={nearest:"nearest-charge",pool:"policy-pool",self:"current-policy"}[replay.opponent_mode]||replay.opponent_mode;
+  const roles=[opponent,opponent]; roles[replay.learner_team]="learner";
+  const text=mobile?"B "+roles[0]+" · R "+roles[1]:"blue "+roles[0]+" vs red "+roles[1];
+  setText(matchup,text); document.title="Muster · "+text;
+}
+setMatchup();
+
+function setUpdateChoices(values) {
+  if (!Number.isInteger(replay.update)) { update.hidden=true; return; }
+  values=[...new Set(values.filter(Number.isInteger).concat(replay.update))].sort((a,b)=>b-a);
+  updates.replaceChildren(...values.map(value=>{
+    const option=document.createElement("option"); option.value=value; option.textContent=value;
+    option.selected=value===replay.update; return option;
+  }));
+}
+setUpdateChoices([]);
+function refreshUpdates() {
+  fetch("/replays/manifest.json",{cache:"no-store"})
+    .then(response=>response.ok?response.json():Promise.reject())
+    .then(manifest=>{
+      setUpdateChoices(Array.isArray(manifest.updates)?manifest.updates:[]);
+      if (Number.isInteger(manifest.current)&&manifest.current!==replay.update)
+        setText(current,(mobile?"current ":"load current ")+manifest.current);
+    })
+    .catch(()=>{});
+}
+refreshUpdates();
+setInterval(refreshUpdates,10000);
+
+function arenaPath(context,left,top,width,height) {
+  context.beginPath(); context.moveTo(left+width*.5,top);
+  context.lineTo(left+width,top+height*.25); context.lineTo(left+width,top+height*.75);
+  context.lineTo(left+width*.5,top+height); context.lineTo(left,top+height*.75);
+  context.lineTo(left,top+height*.25); context.closePath();
+}
+
+function appendTerritoryHex(context,hex,left,top,pixelWidth,pixelHeight) {
+  const q=hex[0], r=hex[1];
+  const size=cfg.world_width/(3*hexRadius+2);
+  const x=left+(cfg.world_width*.5+1.5*size*q)*pixelWidth/cfg.world_width;
+  const y=top+pixelHeight-(cfg.world_height*.5+Math.sqrt(3)*size*(r+.5*q))*pixelHeight/cfg.world_height;
+  const rx=size*pixelWidth/cfg.world_width, ry=size*pixelHeight/cfg.world_height;
+  for (let side=0;side<6;side++) {
+    const angle=side*Math.PI/3, px=x+rx*Math.cos(angle), py=y-ry*Math.sin(angle);
+    if (side===0) context.moveTo(px,py); else context.lineTo(px,py);
+  }
+  context.closePath();
+}
+
+function territoryHexPath(context,hex,pixelWidth,pixelHeight) {
+  context.beginPath(); appendTerritoryHex(context,hex,0,0,pixelWidth,pixelHeight);
+}
+
+function territoryBoardPath(context,left,top,pixelWidth,pixelHeight) {
+  context.beginPath();
+  for (const hex of territoryHexes) appendTerritoryHex(context,hex,left,top,pixelWidth,pixelHeight);
+}
+
+function prepareTerritoryGeometry(pixelWidth,pixelHeight) {
+  const key=pixelWidth+":"+pixelHeight;
+  if (key===territoryGeometryKey) return;
+  territoryGeometryKey=key; territoryBoard=null; territoryPaths=[];
+  if (!hexRadius||typeof Path2D==="undefined") return;
+  territoryBoard=new Path2D();
+  for (const hex of territoryHexes) {
+    appendTerritoryHex(territoryBoard,hex,0,0,pixelWidth,pixelHeight);
+    const path=new Path2D(); appendTerritoryHex(path,hex,0,0,pixelWidth,pixelHeight);
+    territoryPaths.push(path);
+  }
+}
+
+function updateTerritory(frameIndex,pixelWidth,pixelHeight) {
+  frameIndex=(controlShares||territoryOwners)?territoryFrame[frameIndex]:frameIndex;
+  const key=frameIndex+":"+pixelWidth+":"+pixelHeight;
+  if (key===territoryKey) return;
+  territoryKey=key;
+  territoryCanvas.width=pixelWidth; territoryCanvas.height=pixelHeight;
+  prepareTerritoryGeometry(pixelWidth,pixelHeight);
+  territoryContext.clearRect(0,0,pixelWidth,pixelHeight);
+  territoryContext.save();
+  if (hexRadius) {
+    if (territoryBoard) territoryContext.clip(territoryBoard);
+    else { territoryBoardPath(territoryContext,0,0,pixelWidth,pixelHeight); territoryContext.clip(); }
+  }
+  else if (hexArena) { arenaPath(territoryContext,0,0,pixelWidth,pixelHeight); territoryContext.clip(); }
+  const cellWidth=pixelWidth/territoryWidth, cellHeight=pixelHeight/territoryHeight;
+  if (controlShares) {
+    let territory0=0, territory1=0;
+    const base=frameIndex*territoryCells*2;
+    for (let cell=0;cell<territoryCells;cell++) {
+      const s0=controlShares[base+cell*2]/255, s1=controlShares[base+cell*2+1]/255;
+      territory0+=territoryCellWeight(cell)*s0; territory1+=territoryCellWeight(cell)*s1;
+      const claimed=s0+s1;
+      if (claimed<0.02) continue;
+      const r=Math.round((53*s0+255*s1)/claimed), g=Math.round((167*s0+77*s1)/claimed), b=Math.round((255*s0+95*s1)/claimed);
+      const alpha=Math.min(0.42,0.05+0.4*Math.max(s0,s1)).toFixed(3);
+      territoryContext.fillStyle="rgba("+r+","+g+","+b+","+alpha+")";
+      if (hexRadius) {
+        if (territoryPaths.length) territoryContext.fill(territoryPaths[cell]);
+        else { territoryHexPath(territoryContext,territoryHexes[cell],pixelWidth,pixelHeight); territoryContext.fill(); }
+      }
+      else {
+        const x=cell%territoryWidth, y=Math.floor(cell/territoryWidth);
+        territoryContext.fillRect(x*cellWidth,pixelHeight-(y+1)*cellHeight,cellWidth+.5,cellHeight+.5);
+      }
+    }
+    const advantage=(territory0-territory1)/territoryTotalWeight;
+    territoryText="blue "+(territory0/territoryTotalWeight).toFixed(3)+" | red "+(territory1/territoryTotalWeight).toFixed(3)+" | delta "+(advantage>=0?"+":"")+advantage.toFixed(3);
+    territoryContext.restore();
+    return;
+  }
+  if (territoryOwners) {
+    let territory0=0, territory1=0;
+    const base=frameIndex*territoryCells;
+    for (let cell=0;cell<territoryCells;cell++) {
+      const owner=territoryOwners[base+cell];
+      if (owner<0) continue;
+      if (owner===0) territory0+=territoryCellWeight(cell); else territory1+=territoryCellWeight(cell);
+      if (!hexRadius) {
+        territoryContext.fillStyle=owner===0?"rgba(53,167,255,.28)":"rgba(255,77,95,.28)";
+        const x=cell%territoryWidth, y=Math.floor(cell/territoryWidth);
+        territoryContext.fillRect(x*cellWidth,pixelHeight-(y+1)*cellHeight,cellWidth+.5,cellHeight+.5);
+      }
+    }
+    if (hexRadius) for (let cell=0;cell<territoryCells;cell++) {
+      const owner=territoryOwners[base+cell]; if (owner<0) continue;
+      territoryContext.fillStyle=owner===0?"rgba(53,167,255,.28)":"rgba(255,77,95,.28)";
+      if (territoryPaths.length) territoryContext.fill(territoryPaths[cell]);
+      else { territoryHexPath(territoryContext,territoryHexes[cell],pixelWidth,pixelHeight); territoryContext.fill(); }
+    }
+    const advantage=(territory0-territory1)/territoryTotalWeight;
+    territoryText="blue "+(territory0/territoryTotalWeight).toFixed(3)+" | red "+(territory1/territoryTotalWeight).toFixed(3)+" | delta "+(advantage>=0?"+":"")+advantage.toFixed(3);
+    territoryContext.restore();
+    return;
+  }
+  territoryDensity.fill(0);
+  const frameBase=frameIndex*soldierCount;
+  for (let i=0;i<soldierCount;i++) {
+    const index=frameBase+i, strength=healths[index]/quantizedMax;
+    if (strength<=0) continue;
+    const positionX=positions[index*2]*cfg.world_width/quantizedMax;
+    const positionY=positions[index*2+1]*cfg.world_height/quantizedMax;
+    const gridX=Math.max(0,Math.min(territoryWidth-1,positionX*territoryWidth/cfg.world_width-.5));
+    const gridY=Math.max(0,Math.min(territoryHeight-1,positionY*territoryHeight/cfg.world_height-.5));
+    const x0=Math.floor(gridX), y0=Math.floor(gridY);
+    const x1=Math.min(x0+1,territoryWidth-1), y1=Math.min(y0+1,territoryHeight-1);
+    const fractionX=gridX-x0, fractionY=gridY-y0;
+    const base=teams[i]*territoryCells;
+    territoryDensity[base+y0*territoryWidth+x0]+=strength*(1-fractionX)*(1-fractionY);
+    territoryDensity[base+y0*territoryWidth+x1]+=strength*fractionX*(1-fractionY);
+    territoryDensity[base+y1*territoryWidth+x0]+=strength*(1-fractionX)*fractionY;
+    territoryDensity[base+y1*territoryWidth+x1]+=strength*fractionX*fractionY;
+  }
+
+  let territory0=0, territory1=0;
+  for (let y=0;y<territoryHeight;y++) for (let x=0;x<territoryWidth;x++) {
+    let influence0=0, influence1=0;
+    for (let offsetY=-1;offsetY<=1;offsetY++) {
+      const otherY=y+offsetY; if (otherY<0 || otherY>=territoryHeight) continue;
+      for (let offsetX=-1;offsetX<=1;offsetX++) {
+        const otherX=x+offsetX; if (otherX<0 || otherX>=territoryWidth) continue;
+        const weight=offsetX===0&&offsetY===0?4:offsetX===0||offsetY===0?2:1;
+        const cell=otherY*territoryWidth+otherX;
+        influence0+=weight*territoryDensity[cell];
+        influence1+=weight*territoryDensity[territoryCells+cell];
+      }
+    }
+    influence0*=.0625; influence1*=.0625;
+    const presence=1-Math.exp(-(influence0+influence1)/.15);
+    const difference=Math.max(-20,Math.min(20,(influence0-influence1)/.1));
+    const share0=1/(1+Math.exp(-difference));
+    const strategic=Math.sin(Math.PI*(x+.5)/territoryWidth)**2;
+    const contribution=strategic*presence/(territoryCells*.5);
+    territory0+=contribution*share0;
+    territory1+=contribution*(1-share0);
+    const alpha=.55*presence*strategic;
+    if (alpha>.002) {
+      const red=Math.round(53*share0+255*(1-share0));
+      const green=Math.round(167*share0+77*(1-share0));
+      const blue=Math.round(255*share0+95*(1-share0));
+      territoryContext.fillStyle="rgba("+red+","+green+","+blue+","+alpha+")";
+      territoryContext.fillRect(x*cellWidth,pixelHeight-(y+1)*cellHeight,cellWidth+.5,cellHeight+.5);
+    }
+  }
+  const advantage=territory0-territory1;
+  territoryText="blue "+territory0.toFixed(3)+" | red "+territory1.toFixed(3)+" | delta "+(advantage>=0?"+":"")+advantage.toFixed(3);
+  territoryContext.restore();
+}
+
+function draw() {
+  const dpr=Math.min(devicePixelRatio||1,maxDpr);
+  const width=Math.max(1,Math.round(canvas.clientWidth*dpr));
+  const height=Math.max(1,Math.round(canvas.clientHeight*dpr));
+  if (canvas.width!==width || canvas.height!==height) {
+    canvas.width=width; canvas.height=height; ctx.imageSmoothingEnabled=false;
+  }
+  const margin=12*dpr, scale=Math.min((width-2*margin)/cfg.world_width,(height-2*margin)/cfg.world_height);
+  const left=(width-cfg.world_width*scale)/2, bottom=(height+cfg.world_height*scale)/2, top=bottom-cfg.world_height*scale;
+  const worldWidth=Math.max(1,Math.round(cfg.world_width*scale));
+  const worldHeight=Math.max(1,Math.round(cfg.world_height*scale));
+  if (hexRadius) prepareTerritoryGeometry(worldWidth,worldHeight);
+  const lower=Math.min(Math.floor(cursor),lastFrame), upper=Math.min(lower+1,lastFrame), amount=cursor-lower;
+  ctx.fillStyle="#141414"; ctx.fillRect(0,0,width,height);
+  ctx.save();
+  if (hexRadius&&territoryBoard) {
+    ctx.translate(left,top); ctx.clip(territoryBoard); ctx.translate(-left,-top);
+  }
+  else if (hexRadius) territoryBoardPath(ctx,left,top,cfg.world_width*scale,cfg.world_height*scale);
+  else if (hexArena) arenaPath(ctx,left,top,cfg.world_width*scale,cfg.world_height*scale);
+  else { ctx.beginPath(); ctx.rect(left,top,cfg.world_width*scale,cfg.world_height*scale); }
+  if (!(hexRadius&&territoryBoard)) ctx.clip();
+  ctx.fillStyle="#2b2b2b"; ctx.fillRect(left,top,cfg.world_width*scale,cfg.world_height*scale);
+  if (showTerritory) {
+    updateTerritory(lower,worldWidth,worldHeight);
+    ctx.drawImage(territoryCanvas,left,top,cfg.world_width*scale,cfg.world_height*scale);
+    setText(territoryStatus,territoryText);
+  } else setText(territoryStatus,"");
+  if (cfg.river_width>0) {
+    const x=left+(cfg.world_width-cfg.river_width)*.5*scale, y0=(cfg.world_height-cfg.bridge_width)*.5;
+    ctx.fillStyle="#1e465f"; ctx.fillRect(x,bottom-y0*scale,cfg.river_width*scale,y0*scale);
+    ctx.fillRect(x,top,cfg.river_width*scale,y0*scale);
+  }
+  ctx.restore();
+  if (hexRadius&&strongpointCells.length) {
+    ctx.save(); ctx.translate(left,top);
+    ctx.fillStyle="rgba(255,196,64,.10)"; ctx.strokeStyle="#ffc440"; ctx.lineWidth=Math.max(1.5*dpr,2);
+    for (const cell of strongpointCells) {
+      if (territoryPaths.length) { ctx.fill(territoryPaths[cell]); ctx.stroke(territoryPaths[cell]); }
+      else { territoryHexPath(ctx,territoryHexes[cell],worldWidth,worldHeight); ctx.fill(); ctx.stroke(); }
+    }
+    ctx.restore();
+  }
+  ctx.strokeStyle="#969696"; ctx.lineWidth=Math.max(1,dpr);
+  if (!hexRadius) {
+    if (hexArena) arenaPath(ctx,left,top,cfg.world_width*scale,cfg.world_height*scale);
+    else { ctx.beginPath(); ctx.rect(left,top,cfg.world_width*scale,cfg.world_height*scale); }
+    ctx.stroke();
+  }
+  const radius=Math.max(2*dpr,cfg.soldier_radius*scale);
+  const lowerBase=lower*soldierCount, upperBase=upper*soldierCount;
+  for (let i=0;i<soldierCount;i++) {
+    const lowerIndex=lowerBase+i, upperIndex=upperBase+i, output=i*4;
+    const health=(healths[lowerIndex]+(healths[upperIndex]-healths[lowerIndex])*amount)/quantizedMax;
+    screenState[output+3]=health;
+    if (health<=0) continue;
+    const p0=lowerIndex*2, p1=upperIndex*2;
+    screenState[output]=left+(positions[p0]+(positions[p1]-positions[p0])*amount)*cfg.world_width*scale/quantizedMax;
+    screenState[output+1]=bottom-(positions[p0+1]+(positions[p1+1]-positions[p0+1])*amount)*cfg.world_height*scale/quantizedMax;
+    const angle0=angles[lowerIndex]*angleScale, angle1=angles[upperIndex]*angleScale;
+    screenState[output+2]=angle0+Math.atan2(Math.sin(angle1-angle0),Math.cos(angle1-angle0))*amount;
+  }
+  ctx.strokeStyle="#071116"; ctx.lineWidth=Math.max(1,radius*.14);
+  for (let team=0;team<2;team++) {
+    ctx.fillStyle=team===0?"#35a7ff":"#ff4d5f"; ctx.beginPath();
+    for (let i=0;i<soldierCount;i++) if (teams[i]===team && screenState[i*4+3]>0) {
+      const x=screenState[i*4], y=screenState[i*4+1];
+      ctx.moveTo(x+radius,y); ctx.arc(x,y,radius,0,2*Math.PI);
+    }
+    ctx.fill(); ctx.stroke();
+  }
+  const attackRadius=radius*1.17;
+  ctx.strokeStyle="#ffe08a"; ctx.lineWidth=Math.max(1.2*dpr,radius*.25); ctx.beginPath();
+  for (let i=0;i<soldierCount;i++) if (screenState[i*4+3]>0) {
+    const x=screenState[i*4], y=screenState[i*4+1], start=-screenState[i*4+2]-Math.PI/3;
+    ctx.moveTo(x+Math.cos(start)*attackRadius,y+Math.sin(start)*attackRadius);
+    ctx.arc(x,y,attackRadius,start,start+2*Math.PI/3);
+  }
+  ctx.stroke();
+  const healthRadius=radius*.72;
+  ctx.strokeStyle="#d9f2dc"; ctx.lineWidth=Math.max(1*dpr,radius*.15); ctx.beginPath();
+  for (let i=0;i<soldierCount;i++) {
+    const health=screenState[i*4+3]; if (health<=0 || health>=.99999) continue;
+    const x=screenState[i*4], y=screenState[i*4+1];
+    ctx.moveTo(x+healthRadius,y); ctx.arc(x,y,healthRadius,0,2*Math.PI*health);
+  }
+  ctx.stroke();
+  slider.value=Math.min(cursor,lastFrame);
+  const ending=lower===lastFrame&&Number.isInteger(replay.winner)?(replay.winner<0?" | draw":" | "+(replay.winner===0?"blue":"red")+" wins"):"";
+  setText(status,"step "+lower+" / "+lastFrame+ending);
+}
+
+function animate(now) {
+  animationRequest=0;
+  if (document.hidden) return;
+  const elapsed=Math.min(now-previous,100); previous=now;
+  if (playing) {
+    cursor+=elapsed*Number(speed.value)/1000/cfg.decision_dt;
+    if (cursor>=lastFrame) { cursor=lastFrame; setPlaying(false); }
+    dirty=true;
+  }
+  if (dirty && (!playing || now-lastDraw>=targetFrameMs)) { draw(); dirty=false; lastDraw=now; }
+  if (playing||dirty) scheduleDraw();
+}
+function scheduleDraw() {
+  if (!animationRequest&&!document.hidden) animationRequest=requestAnimationFrame(animate);
+}
+function invalidate() { dirty=true; scheduleDraw(); }
+function setPlaying(value) { playing=value && lastFrame>0; setText(play,playing?"pause":"play"); if (playing) scheduleDraw(); }
+function toggle() { if (!playing && cursor>=lastFrame) cursor=0; setPlaying(!playing); previous=performance.now(); invalidate(); }
+function toggleTerritory() {
+  showTerritory=!showTerritory;
+  setText(territoryButton,mobile?(showTerritory?"map on":"map off"):(showTerritory?"territory on (T)":"territory off (T)"));
+  invalidate();
+}
+play.onclick=toggle;
+current.onclick=()=>location.replace("/?current="+Date.now());
+updates.onchange=()=>location.replace("/replays/update-"+updates.value+".html");
+territoryButton.onclick=toggleTerritory;
+slider.oninput=()=>{ cursor=Number(slider.value); setPlaying(false); invalidate(); };
+document.onkeydown=e=>{
+  if(e.key===" "){e.preventDefault();toggle();}
+  else if(e.key.toLowerCase()==="t")toggleTerritory();
+  else if(e.key==="ArrowLeft"||e.key==="ArrowRight") {
+    e.preventDefault(); setPlaying(false);
+    cursor=Math.max(0,Math.min(lastFrame,Math.floor(cursor)+(e.key==="ArrowLeft"?-1:1))); invalidate();
+  }
+};
+document.addEventListener("visibilitychange",()=>{
+  previous=performance.now();
+  if (document.hidden&&animationRequest) { cancelAnimationFrame(animationRequest); animationRequest=0; }
+  else invalidate();
+});
+const resized=()=>{ territoryKey=""; territoryGeometryKey=""; invalidate(); };
+if (window.ResizeObserver) new ResizeObserver(resized).observe(canvas);
+else window.addEventListener("resize",resized);
+if (mobile) { setText(current,"current"); setText(territoryButton,"map on"); }
+setPlaying(playing);
+invalidate();
+</script>

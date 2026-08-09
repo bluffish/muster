@@ -14,8 +14,11 @@ rl = ["warp-lang>=1.16", "torch>=2.5", "wandb>=0.18"]
 test = ["pytest>=8"]
 viewer = ["pygame>=2.5"]
 
-[tool.setuptools]
-py-modules = ["simulator", "simulator_gpu", "rl_env", "policy", "train", "viewer"]
+[tool.setuptools.packages.find]
+include = ["muster*"]
+
+[tool.setuptools.package-data]
+"muster.viewer" = ["template.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

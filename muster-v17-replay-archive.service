@@ -1,8 +1,0 @@
-[Unit]
-Description=Archive bowen3 Muster v17 influence control training replays
-Wants=network-online.target
-After=network-online.target
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/bin/muster-v17-archive-replays

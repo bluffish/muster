@@ -1,8 +1,0 @@
-[Unit]
-Description=Archive bowen3 Muster v12 episode-mode + clock training replays
-Wants=network-online.target
-After=network-online.target
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/bin/muster-v12-archive-replays

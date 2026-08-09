@@ -1,8 +1,0 @@
-[Unit]
-Description=Archive bowen3 Muster v8 training replays
-Wants=network-online.target
-After=network-online.target
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/bin/muster-v8-archive-replays

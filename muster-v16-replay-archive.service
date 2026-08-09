@@ -1,8 +1,0 @@
-[Unit]
-Description=Archive bowen3 Muster v16 presence control training replays
-Wants=network-online.target
-After=network-online.target
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/bin/muster-v16-archive-replays
