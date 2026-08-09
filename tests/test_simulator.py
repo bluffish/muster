@@ -177,11 +177,12 @@ def test_each_ready_soldier_strikes_only_the_most_centered_target():
 def test_timeout_winner_integrates_weighted_control():
     config = Config(soldiers_per_team=1, maximum_episode_seconds=0.1)
     centers = territory_centers(config)
+    # Full health on both sides: since rules 0.8 influence is health-weighted,
+    # and this test isolates strongpoint weighting, not wounding.
     state = {
         "position": np.array(
             [centers[territory_cell(1, 0)], centers[territory_cell(10, 0)]], np.float32
         ),
-        "health": np.array([1, 100], np.float32),
     }
     actions = np.zeros((1, 2, 4), np.float32)
     cpu = CpuSimulator(config)
