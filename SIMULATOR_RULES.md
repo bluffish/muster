@@ -2,7 +2,7 @@
 
 Status: normative specification for the current simulator implementation
 
-Version: 0.4
+Version: 0.5
 
 Scope: world dynamics, collisions, combat, terrain, and episode termination
 
@@ -515,15 +515,27 @@ collision, or random damage roll in version 0.3.
 ## 15. Episode termination
 
 The battlefield is tiled by a radius-13 axial hex grid containing 547
-territory cells. Control is a pure function of present force: after every
-decision step, each cell belongs to the team of the nearest living soldier,
-provided that soldier's center is within `control_radius` of the cell center
-(compared in the squared-distance domain). Exactly equal nearest distances,
-or no living soldier within the radius, leave the cell unowned. Dead soldiers
-project no control, and control is never remembered: a cell with no qualifying
-presence this step is unowned this step, regardless of history. (The initial
-symmetric ownership constant survives only as the pre-first-step reset value
-shown at frame zero.)
+territory cells. Control is a pure function of present force, computed as a
+soft influence field after every decision step. Each living soldier
+contributes `exp(-0.5 * (d / sigma)^2)` influence to every cell, where `d`
+is the distance from the soldier's center to the cell center and
+`sigma = control_radius / 2`. Contributions are quantized to
+`1 / 2^20` fixed-point units before summation so control is exactly
+independent of soldier iteration order. With `I_0` and `I_1` the teams'
+summed influences on a cell, the control shares are
+
+```text
+share_t = I_t / (I_0 + I_1 + kappa)        kappa = 0.125
+```
+
+so unreached ground remains neutral mass and a lone soldier standing on a
+cell holds about 89% of it. Scoring uses the continuous shares; the ternary
+owner used for display and local observations is the team whose share
+exceeds one half, otherwise unowned. Dead soldiers contribute nothing, and
+control is never remembered: shares are recomputed from living positions
+every step. (The initial symmetric ownership constant survives only as the
+pre-first-step reset value shown at frame zero, and control shares are zero
+until the first step.)
 
 Three non-overlapping radius-1 strongpoints are centered at axial coordinates
 `(0, -8)`, `(0, 0)`, and `(0, 8)`. Each contains seven tiles. Every strongpoint
@@ -531,8 +543,8 @@ tile has territory weight `30`; every other tile has weight `1`, for a total
 territory weight of `1156`.
 
 Scoring is the time integral of held control. After each decision step's
-ownership update, every environment accumulates
-`(weighted_control_0 - weighted_control_1) / total_weight` into its advantage
+influence update, every environment accumulates
+`sum_cells(weight * (share_0 - share_1)) / total_weight` into its advantage
 integral. An episode always runs for
 `maximum_episode_seconds / decision_dt` decision steps, including when a team
 has no living soldiers. At the end, a positive integral is a team-0 win, a
@@ -634,9 +646,10 @@ Before optimization, a new implementation should pass at least these cases:
     the result.
 14. **Weighted control:** a soldier holding the center strongpoint cluster
     outscores an opponent holding a similar-sized disc of plain tiles.
-15. **Presence control:** equidistant opposing soldiers contest a cell; a sole
-    soldier within the control radius owns it; moving away or dying releases
-    it the same step.
+15. **Influence control:** equidistant opposing soldiers split a cell below
+    the ownership threshold; a sole nearby soldier majority-owns it; moving
+    far away or dying releases it the same step, and the fixed-point sums
+    make the result independent of soldier order.
 
 ## 19. Explicit non-goals for version 0.3
 

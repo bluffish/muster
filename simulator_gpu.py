@@ -9,6 +9,8 @@ import numpy as np
 import warp as wp
 
 from simulator import (
+    INFLUENCE_FIXED_SCALE,
+    INFLUENCE_NEUTRAL_FIXED,
     TERRITORY_WEIGHTS,
     TERRITORY_CELLS,
     TERRITORY_INITIAL_OWNER,
@@ -61,7 +63,7 @@ class _Params:
     territory_lookup_radius: int
     territory_lookup_diameter: int
     territory_cells: int
-    territory_control_radius: float
+    territory_control_sigma: float
     territory_total_weight: float
 
 
@@ -387,6 +389,7 @@ def _reset_territory(
     reset_mask: wp.array(dtype=wp.int32),
     initial_owner: wp.array(dtype=wp.int32),
     owner: wp.array(dtype=wp.int32),
+    share: wp.array(dtype=float),
     p: _Params,
 ):
     index = wp.tid()
@@ -395,6 +398,8 @@ def _reset_territory(
         return
     cell = index - env * p.territory_cells
     owner[index] = initial_owner[cell]
+    share[index * 2] = 0.0
+    share[index * 2 + 1] = 0.0
 
 
 @wp.kernel
@@ -463,33 +468,38 @@ def _control_territory_owner(
     done: wp.array(dtype=wp.int32),
     centers: wp.array(dtype=wp.vec2),
     owner: wp.array(dtype=wp.int32),
+    share: wp.array(dtype=float),
     p: _Params,
 ):
-    """Presence control: nearest living soldier within control radius owns."""
+    """Soft influence control with order-invariant fixed-point summation."""
     index = wp.tid()
     env = index // p.territory_cells
     if done[env] != 0:
         return
     cell = index - env * p.territory_cells
     center = centers[cell]
-    nearest_0 = float(1.0e30)
-    nearest_1 = float(1.0e30)
+    fixed_0 = int(0)
+    fixed_1 = int(0)
+    scale = -0.5 / (p.territory_control_sigma * p.territory_control_sigma)
     base = env * p.num_soldiers
     for local in range(p.num_soldiers):
         soldier = base + local
         if alive[soldier] == 0:
             continue
         delta = position[soldier] - center
-        squared = wp.dot(delta, delta)
+        influence = wp.exp(wp.dot(delta, delta) * scale)
+        quantized = int(wp.floor(influence * float(INFLUENCE_FIXED_SCALE) + 0.5))
         if team[soldier] == 0:
-            nearest_0 = wp.min(nearest_0, squared)
+            fixed_0 += quantized
         else:
-            nearest_1 = wp.min(nearest_1, squared)
-    limit = p.territory_control_radius * p.territory_control_radius
+            fixed_1 += quantized
+    total = float(fixed_0 + fixed_1 + INFLUENCE_NEUTRAL_FIXED)
+    share[index * 2] = float(fixed_0) / total
+    share[index * 2 + 1] = float(fixed_1) / total
     result = int(-1)
-    if nearest_0 < nearest_1 and nearest_0 <= limit:
+    if fixed_0 > fixed_1 + INFLUENCE_NEUTRAL_FIXED:
         result = 0
-    elif nearest_1 < nearest_0 and nearest_1 <= limit:
+    elif fixed_1 > fixed_0 + INFLUENCE_NEUTRAL_FIXED:
         result = 1
     owner[index] = result
 
@@ -752,7 +762,7 @@ def _advance_substeps(substep: wp.array(dtype=wp.int32), done: wp.array(dtype=wp
 
 @wp.kernel
 def _finish_step(
-    territory_owner: wp.array(dtype=wp.int32),
+    share: wp.array(dtype=float),
     territory_weights: wp.array(dtype=wp.int32),
     step_count: wp.array(dtype=wp.int32),
     done: wp.array(dtype=wp.int32),
@@ -763,19 +773,14 @@ def _finish_step(
     env = wp.tid()
     if done[env] != 0:
         return
-    owned_0 = int(0)
-    owned_1 = int(0)
+    advantage = float(0.0)
     base = env * p.territory_cells
     for cell in range(p.territory_cells):
-        value = territory_owner[base + cell]
-        if value == 0:
-            owned_0 += territory_weights[cell]
-        elif value == 1:
-            owned_1 += territory_weights[cell]
-    integral = (
-        advantage_integral[env]
-        + float(owned_0 - owned_1) / p.territory_total_weight
-    )
+        weight = float(territory_weights[cell])
+        advantage += weight * (
+            share[(base + cell) * 2] - share[(base + cell) * 2 + 1]
+        )
+    integral = advantage_integral[env] + advantage / p.territory_total_weight
     advantage_integral[env] = integral
     next_step = step_count[env] + 1
     step_count[env] = next_step
@@ -856,6 +861,9 @@ class GpuSimulator:
             territory_centers(self.config), dtype=wp.vec2, device=self.device
         )
         self.advantage_integral = wp.zeros(self.num_envs, dtype=float, device=self.device)
+        self.control_share = wp.zeros(
+            self.num_envs * TERRITORY_CELLS * 2, dtype=float, device=self.device
+        )
         self.territory_weights = wp.array(
             TERRITORY_WEIGHTS, dtype=wp.int32, device=self.device
         )
@@ -931,7 +939,7 @@ class GpuSimulator:
         p.territory_lookup_radius = TERRITORY_LOOKUP_RADIUS
         p.territory_lookup_diameter = TERRITORY_LOOKUP_DIAMETER
         p.territory_cells = TERRITORY_CELLS
-        p.territory_control_radius = c.control_radius
+        p.territory_control_sigma = c.control_radius * 0.5
         p.territory_total_weight = float(TERRITORY_TOTAL_WEIGHT)
         return p
 
@@ -1004,6 +1012,7 @@ class GpuSimulator:
                 self._reset_mask,
                 self._initial_territory,
                 self.territory_owner,
+                self.control_share,
                 self.params,
             ],
             device=self.device,
@@ -1073,6 +1082,11 @@ class GpuSimulator:
             "advantage_integral": (
                 cpu.advantage_integral.astype(np.float32),
                 self.advantage_integral,
+                float,
+            ),
+            "control_share": (
+                cpu.control_share.reshape(-1).astype(np.float32),
+                self.control_share,
                 float,
             ),
         }
@@ -1291,6 +1305,7 @@ class GpuSimulator:
                 self.done,
                 self._territory_centers,
                 self.territory_owner,
+                self.control_share,
                 self.params,
             ],
             device=self.device,
@@ -1299,7 +1314,7 @@ class GpuSimulator:
             _finish_step,
             self.num_envs,
             inputs=[
-                self.territory_owner,
+                self.control_share,
                 self.territory_weights,
                 self.step_count,
                 self.done,
@@ -1329,6 +1344,9 @@ class GpuSimulator:
                 self.num_envs, TERRITORY_CELLS
             ),
             "advantage_integral": self.advantage_integral.numpy(),
+            "control_share": self.control_share.numpy().reshape(
+                self.num_envs, TERRITORY_CELLS, 2
+            ),
         }
 
     def snapshot(self, env: int = 0) -> dict[str, np.ndarray | int | bool]:

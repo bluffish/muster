@@ -178,7 +178,7 @@ def _clear_territory(territory: wp.array(dtype=float)):
 
 @wp.kernel
 def _count_territory(
-    owner: wp.array(dtype=wp.int32),
+    share: wp.array(dtype=float),
     weights: wp.array(dtype=wp.int32),
     territory: wp.array(dtype=float),
     p: _ObservationParams,
@@ -186,13 +186,9 @@ def _count_territory(
     index = wp.tid()
     env = index // p.territory_cells
     cell = index - env * p.territory_cells
-    value = owner[index]
-    if value >= 0:
-        wp.atomic_add(
-            territory,
-            env * 2 + value,
-            float(weights[cell]) / p.territory_total_weight,
-        )
+    weight = float(weights[cell]) / p.territory_total_weight
+    wp.atomic_add(territory, env * 2, weight * share[index * 2])
+    wp.atomic_add(territory, env * 2 + 1, weight * share[index * 2 + 1])
 
 
 @wp.kernel
@@ -546,7 +542,7 @@ class RLEnv:
             _count_territory,
             self.num_envs * TERRITORY_CELLS,
             inputs=[
-                self.sim.territory_owner,
+                self.sim.control_share,
                 self.sim.territory_weights,
                 self._territory,
                 self.params,

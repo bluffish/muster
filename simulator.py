@@ -48,6 +48,11 @@ STRONGPOINT_CELLS = np.flatnonzero(STRONGPOINT_MASK).astype(np.int32)
 TERRITORY_WEIGHTS = np.where(STRONGPOINT_MASK, STRONGPOINT_WEIGHT, 1).astype(np.int32)
 TERRITORY_TOTAL_WEIGHT = int(TERRITORY_WEIGHTS.sum())
 
+# Influence contributions are quantized to fixed point before summation so
+# control is exactly independent of soldier iteration order.
+INFLUENCE_FIXED_SCALE = 1 << 20
+INFLUENCE_NEUTRAL_FIXED = INFLUENCE_FIXED_SCALE >> 3  # kappa = 0.125
+
 # Rounded axial coordinates can be one cell beyond the board near the six walls.
 # This tiny table maps those coordinates to the closest valid territory cell.
 TERRITORY_LOOKUP_RADIUS = TERRITORY_RADIUS + 2
@@ -309,6 +314,7 @@ class CpuSimulator:
         self.winner = np.full(num_envs, -2, np.int8)  # -2 ongoing, -1 draw
         self.territory_owner = np.empty((num_envs, TERRITORY_CELLS), np.int8)
         self.advantage_integral = np.zeros(num_envs, np.float64)
+        self.control_share = np.zeros((num_envs, TERRITORY_CELLS, 2), np.float32)
         self.invalid_action = np.zeros(num_envs, bool)
         self._territory_centers = territory_centers(self.config)
         self.reset()
@@ -328,6 +334,7 @@ class CpuSimulator:
             "winner": self.winner,
             "territory_owner": self.territory_owner,
             "advantage_integral": self.advantage_integral,
+            "control_share": self.control_share,
         }
 
     def snapshot(self, env: int = 0) -> dict[str, np.ndarray | int | bool]:
@@ -410,6 +417,7 @@ class CpuSimulator:
         self.done.fill(False)
         self.winner.fill(-2)
         self.advantage_integral.fill(0.0)
+        self.control_share.fill(0.0)
         self.territory_owner[:] = TERRITORY_INITIAL_OWNER
         if state and "territory_owner" in state:
             owner = np.asarray(state["territory_owner"], dtype=np.int8)
@@ -672,14 +680,17 @@ class CpuSimulator:
             self.substep_count[env] += 1
 
     def _update_territory(self) -> None:
-        """Presence control: a cell belongs to the closest living soldier's team.
+        """Soft influence control with order-invariant fixed-point summation.
 
-        Ownership requires that soldier within ``control_radius``; equal
-        nearest distances or an empty radius leave the cell unowned.
+        Each living soldier contributes ``exp(-0.5 (d / sigma)^2)`` influence
+        to every cell, with ``sigma = control_radius / 2``, quantized to
+        ``INFLUENCE_FIXED_SCALE``. A team's control share is its influence
+        over the total plus the neutral mass ``kappa``; a cell displays as
+        owned when a share exceeds one half.
         """
-        limit = np.float32(self.config.control_radius) ** 2
+        sigma = np.float32(self.config.control_radius * 0.5)
         for env in np.flatnonzero(~self.done):
-            nearest = np.full((2, TERRITORY_CELLS), np.inf, np.float32)
+            fixed = np.zeros((2, TERRITORY_CELLS), np.int64)
             living = np.flatnonzero(self.alive[env])
             for team in (0, 1):
                 members = living[self.team[env, living] == team]
@@ -688,17 +699,32 @@ class CpuSimulator:
                         self._territory_centers[:, None, :]
                         - self.position[env, members][None, :, :]
                     ).astype(np.float32)
-                    nearest[team] = (deltas**2).sum(-1).min(axis=1)
+                    squared = (deltas**2).sum(-1)
+                    influence = np.exp(
+                        np.float32(-0.5) * squared / (sigma * sigma)
+                    ).astype(np.float32)
+                    fixed[team] = (
+                        np.floor(influence * INFLUENCE_FIXED_SCALE + 0.5)
+                        .astype(np.int64)
+                        .sum(axis=1)
+                    )
+            total = (fixed[0] + fixed[1] + INFLUENCE_NEUTRAL_FIXED).astype(np.float32)
+            self.control_share[env, :, 0] = fixed[0].astype(np.float32) / total
+            self.control_share[env, :, 1] = fixed[1].astype(np.float32) / total
             owner = np.full(TERRITORY_CELLS, -1, np.int8)
-            owner[(nearest[0] < nearest[1]) & (nearest[0] <= limit)] = 0
-            owner[(nearest[1] < nearest[0]) & (nearest[1] <= limit)] = 1
+            owner[fixed[0] > fixed[1] + INFLUENCE_NEUTRAL_FIXED] = 0
+            owner[fixed[1] > fixed[0] + INFLUENCE_NEUTRAL_FIXED] = 1
             self.territory_owner[env] = owner
 
     def _accumulate_control(self) -> None:
         for env in np.flatnonzero(~self.done):
-            owned_0 = int(TERRITORY_WEIGHTS[self.territory_owner[env] == 0].sum())
-            owned_1 = int(TERRITORY_WEIGHTS[self.territory_owner[env] == 1].sum())
-            self.advantage_integral[env] += (owned_0 - owned_1) / TERRITORY_TOTAL_WEIGHT
+            advantage = float(
+                (
+                    TERRITORY_WEIGHTS
+                    * (self.control_share[env, :, 0] - self.control_share[env, :, 1])
+                ).sum()
+            )
+            self.advantage_integral[env] += advantage / TERRITORY_TOTAL_WEIGHT
 
     def _finish_episodes(self) -> None:
         for env in range(self.num_envs):

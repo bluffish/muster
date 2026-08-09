@@ -204,7 +204,10 @@ def test_timeout_winner_integrates_weighted_control():
     assert gpu["done"][0] and gpu["winner"][0] == 0
     np.testing.assert_array_equal(gpu["territory_owner"], cpu.territory_owner)
     np.testing.assert_allclose(
-        gpu["advantage_integral"], cpu.advantage_integral, rtol=1e-5, atol=1e-7
+        gpu["advantage_integral"], cpu.advantage_integral, rtol=1e-4, atol=1e-6
+    )
+    np.testing.assert_allclose(
+        gpu["control_share"], cpu.control_share, rtol=1e-4, atol=1e-5
     )
 
 
