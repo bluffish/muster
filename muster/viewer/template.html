@@ -8,11 +8,12 @@
   #frame { flex:1; min-width:60px; }
   button,select,input { font:inherit; }
   #update,#matchup,#status,#territoryStatus { white-space:nowrap; }
+  #inspect { position:fixed; right:10px; top:52px; background:rgba(10,14,18,.85); border:1px solid #444; padding:6px 9px; border-radius:4px; pointer-events:none; z-index:5; }
   canvas { display:block; width:100%; height:calc(100vh - 42px); height:calc(100dvh - 42px); touch-action:none; }
   @media (max-width:700px), (pointer:coarse) {
     #tools { gap:5px; padding:0 6px; }
     #frame { min-width:24px; }
-    #status,#territoryStatus { display:none; }
+    #status,#territoryStatus,#trails { display:none; }
     button,select { padding:3px 5px; font-size:12px; }
   }
 </style>
@@ -20,6 +21,7 @@
   <button id="current">load current</button>
   <button id="play">pause</button>
   <button id="territory">territory on (T)</button>
+  <button id="trails">trails off (R)</button>
   <span id="update"><label for="updates">update</label> <select id="updates"></select></span>
   <span id="matchup"></span>
   <input id="frame" type="range" min="0" value="0" step="any">
@@ -28,6 +30,7 @@
   <span id="territoryStatus"></span>
 </div>
 <canvas id="world"></canvas>
+<div id="inspect" hidden></div>
 <script>
 const replay=__REPLAY__, cfg=replay.config, teams=replay.team;
 const mobile=matchMedia("(pointer:coarse)").matches||innerWidth<=700;
@@ -78,6 +81,22 @@ else if (territoryOwners) for (let frame=1;frame<frameCount;frame++) {
   territoryFrame[frame]=changed?frame:territoryFrame[frame-1];
 }
 const screenState=new Float32Array(soldierCount*4);
+const deathFrame=new Uint16Array(soldierCount).fill(65535);
+const deathX=new Float32Array(soldierCount), deathY=new Float32Array(soldierCount);
+for (let i=0;i<soldierCount;i++) for (let f=1;f<frameCount;f++) {
+  if (healths[f*soldierCount+i]===0 && healths[(f-1)*soldierCount+i]>0) {
+    deathFrame[i]=f;
+    deathX[i]=positions[(f*soldierCount+i)*2]*cfg.world_width/quantizedMax;
+    deathY[i]=positions[(f*soldierCount+i)*2+1]*cfg.world_height/quantizedMax;
+    break;
+  }
+}
+const perceptionRadius=cfg.entity_radius||5;
+let zoom=1, camX=cfg.world_width/2, camY=cfg.world_height/2;
+let showTrails=false, selected=-1;
+let viewLeft=0, viewBottom=0, viewScale=1, viewBase=1, viewDpr=1;
+const trailsButton=document.querySelector("#trails");
+const inspect=document.querySelector("#inspect");
 let cursor=0, playing=lastFrame>0, showTerritory=true, previous=performance.now();
 let dirty=true, lastDraw=0, animationRequest=0, territoryKey="", territoryText="";
 let territoryGeometryKey="", territoryBoard=null, territoryPaths=[];
@@ -89,6 +108,7 @@ function setMatchup() {
   if (!Number.isInteger(replay.learner_team)||!replay.opponent_mode) { matchup.hidden=true; return; }
   const opponent={nearest:"nearest-charge",pool:"policy-pool",self:"current-policy"}[replay.opponent_mode]||replay.opponent_mode;
   const roles=[opponent,opponent]; roles[replay.learner_team]="learner";
+  if (Number.isInteger(replay.learner_mode)) roles[replay.learner_team]+=mobile?"·m"+replay.learner_mode:" (mode "+replay.learner_mode+")";
   const text=mobile?"B "+roles[0]+" · R "+roles[1]:"blue "+roles[0]+" vs red "+roles[1];
   setText(matchup,text); document.title="Muster · "+text;
 }
@@ -283,16 +303,21 @@ function draw() {
   if (canvas.width!==width || canvas.height!==height) {
     canvas.width=width; canvas.height=height; ctx.imageSmoothingEnabled=false;
   }
-  const margin=12*dpr, scale=Math.min((width-2*margin)/cfg.world_width,(height-2*margin)/cfg.world_height);
-  const left=(width-cfg.world_width*scale)/2, bottom=(height+cfg.world_height*scale)/2, top=bottom-cfg.world_height*scale;
-  const worldWidth=Math.max(1,Math.round(cfg.world_width*scale));
-  const worldHeight=Math.max(1,Math.round(cfg.world_height*scale));
+  const margin=12*dpr, baseScale=Math.min((width-2*margin)/cfg.world_width,(height-2*margin)/cfg.world_height);
+  const scale=baseScale*zoom;
+  camX=Math.max(0,Math.min(cfg.world_width,camX)); camY=Math.max(0,Math.min(cfg.world_height,camY));
+  const left=width/2-camX*scale, bottom=height/2+camY*scale, top=bottom-cfg.world_height*scale;
+  viewLeft=left; viewBottom=bottom; viewScale=scale; viewBase=baseScale; viewDpr=dpr;
+  const territoryScale=Math.min(scale,2048/cfg.world_width), geometryRatio=scale/territoryScale;
+  const worldWidth=Math.max(1,Math.round(cfg.world_width*territoryScale));
+  const worldHeight=Math.max(1,Math.round(cfg.world_height*territoryScale));
   if (hexRadius) prepareTerritoryGeometry(worldWidth,worldHeight);
   const lower=Math.min(Math.floor(cursor),lastFrame), upper=Math.min(lower+1,lastFrame), amount=cursor-lower;
   ctx.fillStyle="#141414"; ctx.fillRect(0,0,width,height);
   ctx.save();
   if (hexRadius&&territoryBoard) {
-    ctx.translate(left,top); ctx.clip(territoryBoard); ctx.translate(-left,-top);
+    ctx.translate(left,top); ctx.scale(geometryRatio,geometryRatio); ctx.clip(territoryBoard);
+    ctx.scale(1/geometryRatio,1/geometryRatio); ctx.translate(-left,-top);
   }
   else if (hexRadius) territoryBoardPath(ctx,left,top,cfg.world_width*scale,cfg.world_height*scale);
   else if (hexArena) arenaPath(ctx,left,top,cfg.world_width*scale,cfg.world_height*scale);
@@ -311,8 +336,8 @@ function draw() {
   }
   ctx.restore();
   if (hexRadius&&strongpointCells.length) {
-    ctx.save(); ctx.translate(left,top);
-    ctx.fillStyle="rgba(255,196,64,.10)"; ctx.strokeStyle="#ffc440"; ctx.lineWidth=Math.max(1.5*dpr,2);
+    ctx.save(); ctx.translate(left,top); ctx.scale(geometryRatio,geometryRatio);
+    ctx.fillStyle="rgba(255,196,64,.10)"; ctx.strokeStyle="#ffc440"; ctx.lineWidth=Math.max(1.5*dpr,2)/geometryRatio;
     for (const cell of strongpointCells) {
       if (territoryPaths.length) { ctx.fill(territoryPaths[cell]); ctx.stroke(territoryPaths[cell]); }
       else { territoryHexPath(ctx,territoryHexes[cell],worldWidth,worldHeight); ctx.fill(); ctx.stroke(); }
@@ -326,12 +351,41 @@ function draw() {
     ctx.stroke();
   }
   const radius=Math.max(2*dpr,cfg.soldier_radius*scale);
+  if (showTrails) {
+    ctx.lineWidth=Math.max(1,dpr*.8);
+    const back=Math.max(0,lower-10);
+    for (let team=0;team<2;team++) {
+      ctx.strokeStyle=team===0?"rgba(53,167,255,.3)":"rgba(255,77,95,.3)";
+      ctx.beginPath();
+      for (let i=0;i<soldierCount;i++) if (teams[i]===team && healths[lower*soldierCount+i]>0) {
+        let p=(back*soldierCount+i)*2;
+        ctx.moveTo(left+positions[p]*cfg.world_width*scale/quantizedMax,bottom-positions[p+1]*cfg.world_height*scale/quantizedMax);
+        for (let f=back+2;f<=lower;f+=2) {
+          p=(f*soldierCount+i)*2;
+          ctx.lineTo(left+positions[p]*cfg.world_width*scale/quantizedMax,bottom-positions[p+1]*cfg.world_height*scale/quantizedMax);
+        }
+      }
+      ctx.stroke();
+    }
+  }
+  const fadeFrames=15;
+  ctx.lineWidth=Math.max(1,dpr);
+  for (let i=0;i<soldierCount;i++) {
+    const df=deathFrame[i];
+    if (df===65535||df>lower||lower-df>=fadeFrames) continue;
+    const age=(cursor-df)/fadeFrames, alpha=Math.max(0,.7*(1-age));
+    if (alpha<=0) continue;
+    ctx.strokeStyle=(teams[i]===0?"rgba(53,167,255,":"rgba(255,77,95,")+alpha.toFixed(3)+")";
+    ctx.beginPath(); ctx.arc(left+deathX[i]*scale,bottom-deathY[i]*scale,radius*(1+age*1.5),0,2*Math.PI); ctx.stroke();
+  }
+  let alive0=0, alive1=0;
   const lowerBase=lower*soldierCount, upperBase=upper*soldierCount;
   for (let i=0;i<soldierCount;i++) {
     const lowerIndex=lowerBase+i, upperIndex=upperBase+i, output=i*4;
     const health=(healths[lowerIndex]+(healths[upperIndex]-healths[lowerIndex])*amount)/quantizedMax;
     screenState[output+3]=health;
     if (health<=0) continue;
+    if (teams[i]===0) alive0++; else alive1++;
     const p0=lowerIndex*2, p1=upperIndex*2;
     screenState[output]=left+(positions[p0]+(positions[p1]-positions[p0])*amount)*cfg.world_width*scale/quantizedMax;
     screenState[output+1]=bottom-(positions[p0+1]+(positions[p1+1]-positions[p0+1])*amount)*cfg.world_height*scale/quantizedMax;
@@ -363,9 +417,35 @@ function draw() {
     ctx.moveTo(x+healthRadius,y); ctx.arc(x,y,healthRadius,0,2*Math.PI*health);
   }
   ctx.stroke();
+  if (selected>=0) {
+    const health=screenState[selected*4+3];
+    if (health>0) {
+      const x=screenState[selected*4], y=screenState[selected*4+1];
+      ctx.strokeStyle="#ffffff"; ctx.lineWidth=Math.max(1.2*dpr,radius*.2);
+      ctx.beginPath(); ctx.arc(x,y,radius*1.45,0,2*Math.PI); ctx.stroke();
+      ctx.setLineDash([6*dpr,5*dpr]); ctx.strokeStyle="rgba(255,255,255,.45)"; ctx.lineWidth=Math.max(1,dpr);
+      ctx.beginPath(); ctx.arc(x,y,perceptionRadius*scale,0,2*Math.PI); ctx.stroke(); ctx.setLineDash([]);
+      const facing=-screenState[selected*4+2];
+      ctx.fillStyle=teams[selected]===0?"rgba(53,167,255,.22)":"rgba(255,77,95,.22)";
+      ctx.beginPath(); ctx.moveTo(x,y); ctx.arc(x,y,perceptionRadius*scale*.5,facing-Math.PI/3,facing+Math.PI/3); ctx.closePath(); ctx.fill();
+      const degrees=((Math.round(screenState[selected*4+2]*180/Math.PI)%360)+360)%360;
+      inspect.textContent=(teams[selected]===0?"blue":"red")+" #"+selected+" · hp "+Math.round(health*100)+"% · facing "+degrees+"°";
+      inspect.hidden=false;
+    } else {
+      inspect.textContent=(teams[selected]===0?"blue":"red")+" #"+selected+" · down";
+      inspect.hidden=false;
+    }
+  } else inspect.hidden=true;
   slider.value=Math.min(cursor,lastFrame);
   const ending=lower===lastFrame&&Number.isInteger(replay.winner)?(replay.winner<0?" | draw":" | "+(replay.winner===0?"blue":"red")+" wins"):"";
-  setText(status,"step "+lower+" / "+lastFrame+ending);
+  setText(status,"t="+(lower*cfg.decision_dt).toFixed(1)+"s · step "+lower+"/"+lastFrame+" · blue "+alive0+" · red "+alive1+ending);
+  if (lower===lastFrame&&Number.isInteger(replay.winner)) {
+    const verdict=replay.winner<0?"DRAW":replay.winner===0?"BLUE WINS":"RED WINS";
+    ctx.font="bold "+Math.round(26*dpr)+"px monospace"; ctx.textAlign="center";
+    ctx.fillStyle=replay.winner===0?"#35a7ff":replay.winner===1?"#ff4d5f":"#dddddd";
+    ctx.globalAlpha=.92; ctx.fillText(verdict,width/2,Math.max(top,20*dpr)+34*dpr);
+    ctx.globalAlpha=1; ctx.textAlign="left";
+  }
 }
 
 function animate(now) {
@@ -391,6 +471,74 @@ function toggleTerritory() {
   setText(territoryButton,mobile?(showTerritory?"map on":"map off"):(showTerritory?"territory on (T)":"territory off (T)"));
   invalidate();
 }
+function toggleTrails() {
+  showTrails=!showTrails;
+  setText(trailsButton,showTrails?"trails on (R)":"trails off (R)");
+  invalidate();
+}
+function resetView() { zoom=1; camX=cfg.world_width/2; camY=cfg.world_height/2; invalidate(); }
+function zoomAt(screenX,screenY,factor) {
+  const worldX=(screenX-viewLeft)/viewScale, worldY=(viewBottom-screenY)/viewScale;
+  zoom=Math.max(1,Math.min(16,zoom*factor));
+  const scale=viewBase*zoom;
+  camX=worldX-(screenX-canvas.width/2)/scale;
+  camY=worldY+(screenY-canvas.height/2)/scale;
+  if (zoom===1) { camX=cfg.world_width/2; camY=cfg.world_height/2; }
+  invalidate();
+}
+canvas.addEventListener("wheel",e=>{
+  e.preventDefault();
+  const rect=canvas.getBoundingClientRect();
+  zoomAt((e.clientX-rect.left)*viewDpr,(e.clientY-rect.top)*viewDpr,Math.exp(-e.deltaY*.0015));
+},{passive:false});
+const pointers=new Map();
+let dragDistance=0, pinchDistance=0;
+canvas.addEventListener("pointerdown",e=>{
+  canvas.setPointerCapture(e.pointerId);
+  pointers.set(e.pointerId,{x:e.clientX,y:e.clientY});
+  dragDistance=0;
+  if (pointers.size===2) {
+    const p=[...pointers.values()];
+    pinchDistance=Math.hypot(p[0].x-p[1].x,p[0].y-p[1].y);
+  }
+});
+canvas.addEventListener("pointermove",e=>{
+  const entry=pointers.get(e.pointerId); if (!entry) return;
+  const dx=e.clientX-entry.x, dy=e.clientY-entry.y;
+  entry.x=e.clientX; entry.y=e.clientY;
+  if (pointers.size===1) {
+    dragDistance+=Math.hypot(dx,dy);
+    if (zoom>1) { camX-=dx*viewDpr/viewScale; camY+=dy*viewDpr/viewScale; invalidate(); }
+  } else if (pointers.size===2) {
+    dragDistance=100;
+    const p=[...pointers.values()];
+    const distance=Math.hypot(p[0].x-p[1].x,p[0].y-p[1].y);
+    if (pinchDistance>0) {
+      const rect=canvas.getBoundingClientRect();
+      zoomAt(((p[0].x+p[1].x)/2-rect.left)*viewDpr,((p[0].y+p[1].y)/2-rect.top)*viewDpr,distance/pinchDistance);
+    }
+    pinchDistance=distance;
+  }
+});
+function endPointer(e) {
+  if (!pointers.has(e.pointerId)) return;
+  pointers.delete(e.pointerId);
+  pinchDistance=0;
+  if (pointers.size===0 && dragDistance<5) {
+    const rect=canvas.getBoundingClientRect();
+    const screenX=(e.clientX-rect.left)*viewDpr, screenY=(e.clientY-rect.top)*viewDpr;
+    let best=-1, bestDistance=Math.max(24*viewDpr,cfg.soldier_radius*viewScale*2.5);
+    for (let i=0;i<soldierCount;i++) if (screenState[i*4+3]>0) {
+      const separation=Math.hypot(screenState[i*4]-screenX,screenState[i*4+1]-screenY);
+      if (separation<bestDistance) { best=i; bestDistance=separation; }
+    }
+    selected=best;
+    invalidate();
+  }
+}
+canvas.addEventListener("pointerup",endPointer);
+canvas.addEventListener("pointercancel",endPointer);
+trailsButton.onclick=toggleTrails;
 play.onclick=toggle;
 current.onclick=()=>location.replace("/?current="+Date.now());
 updates.onchange=()=>location.replace("/replays/update-"+updates.value+".html");
@@ -399,6 +547,8 @@ slider.oninput=()=>{ cursor=Number(slider.value); setPlaying(false); invalidate(
 document.onkeydown=e=>{
   if(e.key===" "){e.preventDefault();toggle();}
   else if(e.key.toLowerCase()==="t")toggleTerritory();
+  else if(e.key.toLowerCase()==="r")toggleTrails();
+  else if(e.key==="0")resetView();
   else if(e.key==="ArrowLeft"||e.key==="ArrowRight") {
     e.preventDefault(); setPlaying(false);
     cursor=Math.max(0,Math.min(lastFrame,Math.floor(cursor)+(e.key==="ArrowLeft"?-1:1))); invalidate();

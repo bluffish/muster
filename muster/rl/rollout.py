@@ -22,6 +22,7 @@ from muster.rl.policy import Policy
 if TYPE_CHECKING:
     from muster.rl.pool import OpponentPool
 from muster.sim.constants import (
+    ENTITY_RADIUS,
     STRONGPOINT_CELLS,
     STRONGPOINT_WEIGHT,
     TERRITORY_CELLS,
@@ -139,6 +140,7 @@ class RolloutReplay:
                 "territory_cells": TERRITORY_CELLS,
                 "strongpoint_cells": STRONGPOINT_CELLS.tolist(),
                 "strongpoint_weight": STRONGPOINT_WEIGHT,
+                "entity_radius": ENTITY_RADIUS,
             },
             "team": team,
             "frames": [

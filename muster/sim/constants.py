@@ -65,6 +65,10 @@ TERRITORY_TOTAL_WEIGHT = int(TERRITORY_WEIGHTS.sum())
 # control is exactly independent of soldier iteration order.
 INFLUENCE_FIXED_SCALE = 1 << 20
 
+# Per-soldier entity perception (used by the RL observation builder).
+ENTITY_NEIGHBORS = 16
+ENTITY_RADIUS = 5.0
+
 INFLUENCE_NEUTRAL_FIXED = INFLUENCE_FIXED_SCALE >> 3  # kappa = 0.125
 
 # Rounded axial coordinates can be one cell beyond the board near the six walls.

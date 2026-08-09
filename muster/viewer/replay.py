@@ -13,6 +13,7 @@ import numpy as np
 
 from muster.sim import Config
 from muster.sim.constants import (
+    ENTITY_RADIUS,
     STRONGPOINT_CELLS,
     STRONGPOINT_WEIGHT,
     TERRITORY_CELLS,
@@ -115,6 +116,7 @@ def record_episode(simulator: object, policy: Policy | None = None) -> dict[str,
             "territory_cells": TERRITORY_CELLS,
             "strongpoint_cells": STRONGPOINT_CELLS.tolist(),
             "strongpoint_weight": STRONGPOINT_WEIGHT,
+            "entity_radius": ENTITY_RADIUS,
         },
         "team": np.asarray(state["team"], dtype=int).tolist(),
         "frames": [],
