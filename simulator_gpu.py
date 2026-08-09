@@ -1375,6 +1375,13 @@ class GpuSimulator:
             src_offset=env * TERRITORY_CELLS,
             count=TERRITORY_CELLS,
         )
+        share = wp.empty(TERRITORY_CELLS * 2, dtype=float, device="cpu")
+        wp.copy(
+            share,
+            self.control_share,
+            src_offset=env * TERRITORY_CELLS * 2,
+            count=TERRITORY_CELLS * 2,
+        )
         scalars = {
             "step_count": wp.empty(1, dtype=wp.int32, device="cpu"),
             "done": wp.empty(1, dtype=wp.int32, device="cpu"),
@@ -1395,6 +1402,7 @@ class GpuSimulator:
             "done": bool(scalars["done"].numpy()[0]),
             "winner": int(scalars["winner"].numpy()[0]),
             "territory_owner": owner.numpy(),
+            "control_share": share.numpy().reshape(TERRITORY_CELLS, 2),
         }
 
 

@@ -352,6 +352,7 @@ class CpuSimulator:
             "done": bool(self.done[env]),
             "winner": int(self.winner[env]),
             "territory_owner": self.territory_owner[env].copy(),
+            "control_share": self.control_share[env].copy(),
         }
 
     def _default_state(self) -> dict[str, np.ndarray]:

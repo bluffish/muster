@@ -191,6 +191,9 @@ class RolloutReplay:
         self.owners = torch.empty(
             (self.frames, TERRITORY_CELLS), dtype=torch.int32, device=device
         )
+        self.control = torch.empty(
+            (self.frames, TERRITORY_CELLS, 2), dtype=torch.float32, device=device
+        )
         self.next_frame = 0
 
     def retarget(self, env_index: int, opponent_mode: str, learner_team: int) -> None:
@@ -222,6 +225,11 @@ class RolloutReplay:
         self.owners[frame].copy_(
             wp.to_torch(sim.territory_owner).view(envs, TERRITORY_CELLS)[self.env_index]
         )
+        self.control[frame].copy_(
+            wp.to_torch(sim.control_share).view(envs, TERRITORY_CELLS, 2)[
+                self.env_index
+            ]
+        )
         self.next_frame += 1
 
     def replay(
@@ -238,6 +246,7 @@ class RolloutReplay:
         angle = self.angle[:frame_count].cpu().numpy()
         health = self.health[:frame_count].cpu().numpy()
         owners = self.owners[:frame_count].cpu().numpy().astype(np.int8)
+        control = self.control[:frame_count].cpu().numpy()
         sim = self.env.sim
         team = (
             wp.to_torch(sim.team)
@@ -263,7 +272,13 @@ class RolloutReplay:
             },
             "team": team,
             "frames": [
-                {"p": position[i], "a": angle[i], "h": health[i], "o": owners[i]}
+                {
+                    "p": position[i],
+                    "a": angle[i],
+                    "h": health[i],
+                    "o": owners[i],
+                    "c": control[i],
+                }
                 for i in range(frame_count)
             ],
             "update": update,

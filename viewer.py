@@ -76,7 +76,8 @@ const positions=decode(replay.position_u16,Uint16Array);
 const angles=decode(replay.angle_i16,Int16Array);
 const healths=decode(replay.health_u16,Uint16Array);
 const territoryOwners=replay.territory_i8?decode(replay.territory_i8,Int8Array):null;
-delete replay.position_u16; delete replay.angle_i16; delete replay.health_u16; delete replay.territory_i8;
+const controlShares=replay.control_u8?decode(replay.control_u8,Uint8Array):null;
+delete replay.position_u16; delete replay.angle_i16; delete replay.health_u16; delete replay.territory_i8; delete replay.control_u8;
 const frameCount=replay.frame_count, soldierCount=teams.length, lastFrame=frameCount-1;
 const quantizedMax=65535, angleScale=Math.PI/32767;
 const canvas=document.querySelector("#world"), ctx=canvas.getContext("2d",{alpha:false,desynchronized:true});
@@ -101,7 +102,12 @@ if (hexRadius) for (let q=-hexRadius;q<=hexRadius;q++) {
 const territoryDensity=new Float32Array(2*territoryCells);
 const territoryCanvas=document.createElement("canvas"), territoryContext=territoryCanvas.getContext("2d",{desynchronized:true});
 const territoryFrame=new Uint16Array(frameCount);
-if (territoryOwners) for (let frame=1;frame<frameCount;frame++) {
+if (controlShares) for (let frame=1;frame<frameCount;frame++) {
+  let changed=false, base=frame*territoryCells*2, previousBase=base-territoryCells*2;
+  for (let i=0;i<territoryCells*2&&!changed;i++) changed=controlShares[base+i]!==controlShares[previousBase+i];
+  territoryFrame[frame]=changed?frame:territoryFrame[frame-1];
+}
+else if (territoryOwners) for (let frame=1;frame<frameCount;frame++) {
   let changed=false, base=frame*territoryCells, previousBase=base-territoryCells;
   for (let cell=0;cell<territoryCells&&!changed;cell++) changed=territoryOwners[base+cell]!==territoryOwners[previousBase+cell];
   territoryFrame[frame]=changed?frame:territoryFrame[frame-1];
@@ -188,7 +194,7 @@ function prepareTerritoryGeometry(pixelWidth,pixelHeight) {
 }
 
 function updateTerritory(frameIndex,pixelWidth,pixelHeight) {
-  frameIndex=territoryOwners?territoryFrame[frameIndex]:frameIndex;
+  frameIndex=(controlShares||territoryOwners)?territoryFrame[frameIndex]:frameIndex;
   const key=frameIndex+":"+pixelWidth+":"+pixelHeight;
   if (key===territoryKey) return;
   territoryKey=key;
@@ -202,6 +208,31 @@ function updateTerritory(frameIndex,pixelWidth,pixelHeight) {
   }
   else if (hexArena) { arenaPath(territoryContext,0,0,pixelWidth,pixelHeight); territoryContext.clip(); }
   const cellWidth=pixelWidth/territoryWidth, cellHeight=pixelHeight/territoryHeight;
+  if (controlShares) {
+    let territory0=0, territory1=0;
+    const base=frameIndex*territoryCells*2;
+    for (let cell=0;cell<territoryCells;cell++) {
+      const s0=controlShares[base+cell*2]/255, s1=controlShares[base+cell*2+1]/255;
+      territory0+=territoryCellWeight(cell)*s0; territory1+=territoryCellWeight(cell)*s1;
+      const claimed=s0+s1;
+      if (claimed<0.02) continue;
+      const r=Math.round((53*s0+255*s1)/claimed), g=Math.round((167*s0+77*s1)/claimed), b=Math.round((255*s0+95*s1)/claimed);
+      const alpha=Math.min(0.42,0.05+0.4*Math.max(s0,s1)).toFixed(3);
+      territoryContext.fillStyle="rgba("+r+","+g+","+b+","+alpha+")";
+      if (hexRadius) {
+        if (territoryPaths.length) territoryContext.fill(territoryPaths[cell]);
+        else { territoryHexPath(territoryContext,territoryHexes[cell],pixelWidth,pixelHeight); territoryContext.fill(); }
+      }
+      else {
+        const x=cell%territoryWidth, y=Math.floor(cell/territoryWidth);
+        territoryContext.fillRect(x*cellWidth,pixelHeight-(y+1)*cellHeight,cellWidth+.5,cellHeight+.5);
+      }
+    }
+    const advantage=(territory0-territory1)/territoryTotalWeight;
+    territoryText="blue "+(territory0/territoryTotalWeight).toFixed(3)+" | red "+(territory1/territoryTotalWeight).toFixed(3)+" | delta "+(advantage>=0?"+":"")+advantage.toFixed(3);
+    territoryContext.restore();
+    return;
+  }
   if (territoryOwners) {
     let territory0=0, territory1=0;
     const base=frameIndex*territoryCells;
@@ -518,6 +549,7 @@ def record_episode(simulator: object, policy: Policy = nearest_enemy_policy) -> 
                 "a": np.asarray(state["attack_angle"]).round(4).tolist(),
                 "h": np.asarray(state["health"]).round(3).tolist(),
                 "o": np.asarray(state["territory_owner"], dtype=np.int8).tolist(),
+                "c": np.asarray(state["control_share"], dtype=np.float32),
             }
         )
         if state["done"]:
@@ -555,6 +587,11 @@ def _pack_replay(replay: Mapping[str, object]) -> dict[str, object]:
         if all("o" in frame for frame in frames)
         else None
     )
+    control_share = (
+        np.asarray([frame["c"] for frame in frames], dtype=np.float32)
+        if all("c" in frame for frame in frames)
+        else None
+    )
     expected = (len(frames), len(replay["team"]))
     if positions.shape != (*expected, 2) or angles.shape != expected or health.shape != expected:
         raise ValueError("replay frame shapes do not match its team array")
@@ -589,6 +626,9 @@ def _pack_replay(replay: Mapping[str, object]) -> dict[str, object]:
     )
     if territory_owner is not None:
         packed["territory_i8"] = _encode_array(territory_owner)
+    if control_share is not None:
+        quantized = np.rint(np.clip(control_share, 0, 1) * 255).astype(np.uint8)
+        packed["control_u8"] = _encode_array(quantized)
     return packed
 
 

@@ -502,7 +502,9 @@ def test_rollout_replay_uses_the_existing_episode_and_keeps_history(tmp_path):
     latest = tmp_path / "replay.html"
     assert history.exists() and latest.exists()
     assert history.stat().st_ino == latest.stat().st_ino
-    assert '"update":9' in history.read_text()
+    contents = history.read_text()
+    assert '"update":9' in contents
+    assert '"control_u8":' in contents
 
 
 def test_action_repeat_holds_one_action_across_three_simulator_steps():
