@@ -3,7 +3,20 @@
 Version history of the training stack and game rules. Each run's exact flags
 are preserved in its checkpoint (`train_args`) and in git history.
 
-## v19.2 — entropy control (current)
+## v20 — charger-seeded pure self-play (current)
+Fresh run (`local-hex-v20-charger-selfplay-v1`) warm-started from
+`distilled_charger.pt`: a behavior clone of a perception-limited charger
+(attack the nearest enemy within visual radius 5, otherwise march on the
+nearest strongpoint; move-direction cosine 0.98 to the teacher). Pure pool
+self-play, no scripted opponents. Rationale: the passive equilibrium was
+locally stable under every payoff fix because gradient descent evaluates
+combat under its own (in)competence — the v19 lineage beat 0/64 of the
+distilled charger while it kept 99.8% HP. Initializing inside the
+aggressive basin makes self-play refine fighting instead of avoiding it.
+Critic and value pathways start untrained (BC touched only the actor), so
+early updates run on noisy advantages; target-KL 0.02 bounds the damage.
+
+## v19.2 — entropy control
 Entropy coefficient 0.003 -> 0.0005 and log_std ceiling +1 -> 0. With the
 task gradient nearly flat at the passive equilibrium (KL ~0.003/update),
 the entropy bonus had pushed policy entropy from 3.9 to 5.5 nats
