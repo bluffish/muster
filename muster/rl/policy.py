@@ -443,7 +443,10 @@ class Policy(nn.Module):
         return value * state.alive.to(torch.float32)
 
     def _distribution(self, mean: torch.Tensor) -> Normal:
-        std = self.log_std.clamp(self.log_std_floor, 1).exp().to(mean.dtype).expand_as(mean)
+        # Ceiling 0 caps the pre-tanh std at 1: by update ~780 the entropy
+        # bonus had pushed log_std to ~0 heading for the old cap of +1,
+        # where sampled actions are near-uniform noise.
+        std = self.log_std.clamp(self.log_std_floor, 0).exp().to(mean.dtype).expand_as(mean)
         return Normal(mean, std)
 
     @staticmethod

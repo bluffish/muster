@@ -3,7 +3,16 @@
 Version history of the training stack and game rules. Each run's exact flags
 are preserved in its checkpoint (`train_args`) and in git history.
 
-## v19.1 — health-weighted influence (rules 0.8, current)
+## v19.2 — entropy control (current)
+Entropy coefficient 0.003 -> 0.0005 and log_std ceiling +1 -> 0. With the
+task gradient nearly flat at the passive equilibrium (KL ~0.003/update),
+the entropy bonus had pushed policy entropy from 3.9 to 5.5 nats
+(pre-tanh std ~1.0, sampled play near-random) while scripted wins fell
+12.7% -> 3.8%. Interpretability probes (see /home/ubuntu/mechinterp on the
+training host) showed intact competence being buried by sampling noise
+rather than unlearned.
+
+## v19.1 — health-weighted influence (rules 0.8)
 Wounded soldiers project quadratically less control: influence is now
 `(h / H)^2 * exp(-0.5 (d / sigma)^2)`. Motivated by the measured
 nonconfrontational self-play equilibrium (pool episodes ended with 0.5%
