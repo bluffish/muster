@@ -102,7 +102,7 @@ class CpuSimulator:
         # Square block: equal columns and rows (16 x 16 at the default 256).
         cols = math.ceil(math.sqrt(n))
         rows = math.ceil(n / cols)
-        spacing = 1.1 * c.diameter
+        spacing = 1.4 * c.diameter
         local = np.arange(n)
         col, row = local // rows, local % rows
         column_size = np.minimum(rows, n - col * rows)
