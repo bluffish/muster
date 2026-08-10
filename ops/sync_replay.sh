@@ -37,6 +37,14 @@ for source_directory in "$archive_root"/*/replays; do
             mv -f "$temporary_file" "$published_history"
             temporary_file=""
         fi
+        # The published copy carries the full payload (retemplating extracts
+        # it from any replay file), so the archive copy is redundant once a
+        # valid published copy exists. The archive is a transit area only.
+        if test -f "$published_history" \
+            && test "$(wc -c < "$published_history")" -gt 100000 \
+            && grep -q 'const replay=' "$published_history"; then
+            rm -f "$replay_path"
+        fi
     done
 
     published_files=$(find "$published_directory" -maxdepth 1 -type f -name 'update-*.html' -printf '%f\n' | sort -V)
