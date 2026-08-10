@@ -2,7 +2,7 @@
 #SBATCH --job-name=muster-v21
 #SBATCH --account=avanderburg_lab
 #SBATCH --partition=gpu_requeue
-#SBATCH --gpus=nvidia_h100_80gb_hbm3:1
+#SBATCH --gpus=nvidia_rtx_pro_6000_blackwell_server_edition:1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=64G
 #SBATCH --time=3-00:00:00
