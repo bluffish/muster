@@ -99,7 +99,8 @@ class CpuSimulator:
     def _default_state(self) -> dict[str, np.ndarray]:
         c = self.config
         n = c.soldiers_per_team
-        cols = math.ceil(math.sqrt(2 * n))
+        # Square block: equal columns and rows (16 x 16 at the default 256).
+        cols = math.ceil(math.sqrt(n))
         rows = math.ceil(n / cols)
         spacing = 1.1 * c.diameter
         local = np.arange(n)
