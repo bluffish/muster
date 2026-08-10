@@ -59,6 +59,13 @@ for replay_name in $remote_files; do
     remote_ssh "rm -f -- '$source_directory/$replay_name'"
 done
 
+# Training metrics for the charts page: small append-only files, copied
+# whole. Best-effort everywhere.
+mkdir -p "/srv/muster/runs/$run"
+scp -q -i "$identity" -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=3 \
+    "$remote:/home/ubuntu/muster-local-hex/runs/$run/metrics.jsonl" \
+    "/srv/muster/runs/$run/metrics.jsonl" 2>/dev/null || true
+
 # Cluster runs (FASRC Cannon over the VPN). Best-effort: a down tunnel or
 # login node must not fail the AWS archive above.
 cannon_host=bowen@login.rc.fas.harvard.edu
@@ -69,7 +76,10 @@ cannon_ssh() {
 for run in ${MUSTER_CANNON_RUNS:-}; do
     source_directory="$cannon_root/$run/replays"
     archive_directory="/srv/muster-archive/$run/replays"
-    mkdir -p "$archive_directory"
+    mkdir -p "$archive_directory" "/srv/muster/runs/$run"
+    scp -q -o BatchMode=yes -o ConnectTimeout=5 \
+        "$cannon_host:$cannon_root/$run/metrics.jsonl" \
+        "/srv/muster/runs/$run/metrics.jsonl" 2>/dev/null || true
     remote_files=$(cannon_ssh "find '$source_directory' -maxdepth 1 -type f -name 'update-*.html' -printf '%f\\n' 2>/dev/null" | sort -V) || continue
     for replay_name in $remote_files; do
         update=${replay_name#update-}

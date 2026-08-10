@@ -1,0 +1,171 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Muster - charts</title>
+<style>
+  :root {
+    --bg:#0e1116; --panel:#141b24; --line:#242e3a; --ink:#c9d4df; --dim:#8b98a5;
+    --blue:#35a7ff; --red:#ff4d5f; --gold:#ffc440; --green:#4ade80;
+  }
+  html,body { margin:0; background:var(--bg); color:var(--ink); font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+  header { display:flex; align-items:center; gap:10px; padding:10px 16px; border-bottom:1px solid var(--line); background:var(--panel); position:sticky; top:0; z-index:5; flex-wrap:wrap; }
+  #brand { font-weight:700; letter-spacing:.24em; color:var(--dim); font-size:12px; }
+  a.nav { color:var(--dim); text-decoration:none; border:1px solid var(--line); border-radius:6px; padding:3px 8px; font-size:12px; font-weight:600; }
+  a.nav:hover { color:var(--ink); border-color:#38455a; }
+  select { font:inherit; color:var(--ink); background:#151b23; border:1px solid var(--line); border-radius:6px; padding:4px 8px; }
+  #status { color:var(--dim); }
+  #meta { color:var(--dim); margin-left:auto; font-variant-numeric:tabular-nums; }
+  main { max-width:1180px; margin:0 auto; padding:18px 16px 60px; display:grid; grid-template-columns:repeat(auto-fill,minmax(340px,1fr)); gap:14px; }
+  figure { margin:0; background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px 12px 8px; }
+  figcaption { font-size:12px; color:var(--dim); display:flex; gap:12px; align-items:baseline; margin-bottom:6px; }
+  figcaption b { color:var(--ink); font-weight:600; }
+  .k0 { color:var(--blue); } .k1 { color:var(--red); } .k2 { color:var(--gold); }
+  canvas { display:block; width:100%; height:170px; }
+</style>
+<header>
+  <span id="brand">MUSTER</span>
+  <a class="nav" href="/runs.html">runs</a>
+  <a class="nav" id="replaysLink" href="/">replays</a>
+  <select id="runSelect"></select>
+  <span id="status"></span>
+  <span id="meta"></span>
+</header>
+<main id="grid"></main>
+<script>
+const palette=["#35a7ff","#ff4d5f","#ffc440"];
+const query=new URLSearchParams(location.search);
+let run=query.get("run")||"";
+const grid=document.getElementById("grid");
+const statusEl=document.getElementById("status");
+const metaEl=document.getElementById("meta");
+const runSelect=document.getElementById("runSelect");
+
+const PANELS=[
+  {title:"learner win rate",unit:"%",series:[{label:"wins/episodes",key:r=>100*r.wins/Math.max(1,r.episodes)}]},
+  {title:"damage per episode",series:[{label:"dealt",key:r=>r.episode_damage_dealt},{label:"taken",key:r=>r.episode_damage_taken}]},
+  {title:"final alive fraction",series:[{label:"learner",key:r=>r.learner_final_alive_fraction},{label:"opponent",key:r=>r.opponent_final_alive_fraction}]},
+  {title:"territory advantage",zero:true,series:[{label:"learner - opponent",key:r=>r.territory_advantage}]},
+  {title:"weighted control",series:[{label:"learner",key:r=>r.learner_territory},{label:"opponent",key:r=>r.opponent_territory}]},
+  {title:"policy loss",zero:true,series:[{label:"policy",key:r=>r.policy_loss}]},
+  {title:"value loss",series:[{label:"value",key:r=>r.value_loss}]},
+  {title:"entropy",series:[{label:"policy entropy",key:r=>r.entropy}]},
+  {title:"approximate KL",series:[{label:"per update",key:r=>r.approximate_kl}]},
+  {title:"gradient norm",series:[{label:"global",key:r=>r.gradient_norm}]},
+  {title:"episode modes",series:[{label:"action delta",key:r=>r.mode_action_delta},{label:"win spread",key:r=>(r.mode_win_best??0)-(r.mode_win_worst??0)}]},
+  {title:"anchor eval win rate",unit:"%",dots:true,series:[{label:"vs scripted anchor",key:r=>r.anchor_win_rate==null?null:100*r.anchor_win_rate}]},
+  {title:"throughput",series:[{label:"env decisions/s",key:r=>r.environment_decisions_per_second}]},
+  {title:"scripted episodes win rate",unit:"%",series:[{label:"vs scripted",key:r=>r.scripted_episodes?100*r.scripted_wins/r.scripted_episodes:null}]},
+];
+
+function bucket(rows,key,buckets){
+  const xs=[],ys=[];
+  const n=rows.length, size=Math.max(1,Math.ceil(n/buckets));
+  for(let i=0;i<n;i+=size){
+    let sum=0,count=0,x=0;
+    for(let j=i;j<Math.min(n,i+size);j++){
+      const v=key(rows[j]);
+      if(v==null||!isFinite(v))continue;
+      sum+=v;count++;x=rows[j].update;
+    }
+    if(count){xs.push(x);ys.push(sum/count);}
+  }
+  return {xs,ys};
+}
+
+function drawPanel(canvas,panel,rows){
+  const dpr=Math.min(devicePixelRatio||1,2);
+  const w=canvas.clientWidth*dpr,h=canvas.clientHeight*dpr;
+  canvas.width=w;canvas.height=h;
+  const ctx=canvas.getContext("2d");
+  const pad={l:46*dpr,r:8*dpr,t:8*dpr,b:20*dpr};
+  const series=panel.series.map(s=>bucket(rows,s.key,panel.dots?10000:420)).map((d,i)=>({...d,label:panel.series[i].label}));
+  let lo=Infinity,hi=-Infinity,xlo=Infinity,xhi=-Infinity;
+  for(const s of series)for(let i=0;i<s.ys.length;i++){
+    lo=Math.min(lo,s.ys[i]);hi=Math.max(hi,s.ys[i]);
+    xlo=Math.min(xlo,s.xs[i]);xhi=Math.max(xhi,s.xs[i]);
+  }
+  if(!isFinite(lo)){ctx.fillStyle="#8b98a5";ctx.font=`${11*dpr}px ui-monospace,monospace`;ctx.fillText("no data",w/2-20*dpr,h/2);return;}
+  if(panel.zero){lo=Math.min(lo,0);hi=Math.max(hi,0);}
+  if(hi===lo){hi+=1;lo-=1;}
+  const span=hi-lo;lo-=span*.06;hi+=span*.06;
+  const X=x=>pad.l+(x-xlo)/Math.max(1,xhi-xlo)*(w-pad.l-pad.r);
+  const Y=y=>h-pad.b-(y-lo)/(hi-lo)*(h-pad.t-pad.b);
+  ctx.strokeStyle="#1c2530";ctx.lineWidth=1;
+  ctx.font=`${10*dpr}px ui-monospace,monospace`;ctx.fillStyle="#5c6875";
+  const ticks=4;
+  for(let t=0;t<=ticks;t++){
+    const v=lo+(hi-lo)*t/ticks,y=Y(v);
+    ctx.beginPath();ctx.moveTo(pad.l,y);ctx.lineTo(w-pad.r,y);ctx.stroke();
+    const label=Math.abs(v)>=1000?(v/1000).toFixed(1)+"k":Math.abs(v)>=10?v.toFixed(0):Math.abs(v)>=0.01?v.toFixed(2):v.toExponential(0);
+    ctx.fillText(label,4*dpr,y+3*dpr);
+  }
+  for(let t=0;t<=3;t++){
+    const x=xlo+(xhi-xlo)*t/3;
+    ctx.fillText("u"+Math.round(x),X(x)-(t===3?34*dpr:6*dpr),h-6*dpr);
+  }
+  if(panel.zero&&lo<0&&hi>0){
+    ctx.strokeStyle="#3a4658";ctx.beginPath();ctx.moveTo(pad.l,Y(0));ctx.lineTo(w-pad.r,Y(0));ctx.stroke();
+  }
+  series.forEach((s,i)=>{
+    ctx.strokeStyle=ctx.fillStyle=palette[i%palette.length];
+    if(panel.dots){
+      for(let j=0;j<s.xs.length;j++){ctx.beginPath();ctx.arc(X(s.xs[j]),Y(s.ys[j]),2.2*dpr,0,7);ctx.fill();}
+    } else {
+      ctx.lineWidth=1.4*dpr;ctx.beginPath();
+      for(let j=0;j<s.xs.length;j++){const x=X(s.xs[j]),y=Y(s.ys[j]);j?ctx.lineTo(x,y):ctx.moveTo(x,y);}
+      ctx.stroke();
+    }
+  });
+}
+
+function render(rows){
+  grid.replaceChildren();
+  metaEl.textContent=rows.length+" updates · u"+rows[0].update+"-u"+rows[rows.length-1].update;
+  for(const panel of PANELS){
+    const figure=document.createElement("figure");
+    const caption=document.createElement("figcaption");
+    caption.innerHTML="<b>"+panel.title+"</b>"+panel.series.map((s,i)=>`<span class="k${i%3}">— ${s.label}</span>`).join("");
+    const canvas=document.createElement("canvas");
+    figure.append(caption,canvas);grid.append(figure);
+    drawPanel(canvas,panel,rows);
+  }
+}
+
+let currentRows=null;
+async function load(){
+  statusEl.textContent="loading…";grid.replaceChildren();
+  try{
+    const response=await fetch("/runs/"+encodeURIComponent(run)+"/metrics.jsonl",{cache:"no-store"});
+    if(!response.ok)throw new Error("no metrics for this run ("+response.status+")");
+    const text=await response.text();
+    const rows=[];
+    for(const line of text.split("\n")){
+      if(!line)continue;
+      try{rows.push(JSON.parse(line));}catch{}
+    }
+    if(!rows.length)throw new Error("metrics file is empty");
+    rows.sort((a,b)=>a.update-b.update);
+    currentRows=rows;
+    statusEl.textContent="";
+    document.title="Muster charts - "+run;
+    document.getElementById("replaysLink").href=
+      "/runs/"+encodeURIComponent(run)+"/replays/update-"+rows[rows.length-1].update+".html";
+    render(rows);
+  }catch(error){
+    statusEl.textContent=String(error&&error.message||error);
+  }
+}
+
+fetch("/runs/index.json",{cache:"no-store"}).then(r=>r.ok?r.json():[]).then(list=>{
+  if(!Array.isArray(list)||!list.length)return;
+  if(!run)run=list[0];
+  runSelect.replaceChildren(...list.map(name=>{
+    const option=document.createElement("option");
+    option.value=name;option.textContent=name;option.selected=name===run;
+    return option;
+  }));
+  runSelect.onchange=()=>{location.href="/charts.html?run="+encodeURIComponent(runSelect.value);};
+  if(run)load();
+}).catch(()=>{ if(run)load(); });
+addEventListener("resize",()=>{ if(currentRows)render(currentRows); });
+</script>

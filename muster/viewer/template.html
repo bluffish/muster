@@ -13,8 +13,8 @@
   #top { border-bottom:1px solid var(--border); }
   #dock { border-top:1px solid var(--border); }
   #brand { font-weight:700; letter-spacing:.24em; color:var(--dim); font-size:12px; user-select:none; }
-  #runsLink { font:600 12px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; color:var(--dim); text-decoration:none; border:1px solid var(--border); border-radius:6px; padding:3px 8px; }
-  #runsLink:hover { color:var(--text); border-color:#38455a; }
+  #runsLink,#chartsLink { font:600 12px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; color:var(--dim); text-decoration:none; border:1px solid var(--border); border-radius:6px; padding:3px 8px; }
+  #runsLink:hover,#chartsLink:hover { color:var(--text); border-color:#38455a; }
   button,select { font:inherit; color:var(--dim); background:transparent; border:1px solid var(--border); border-radius:6px; padding:4px 10px; cursor:pointer; white-space:nowrap; }
   button:hover,select:hover { color:var(--text); border-color:#38455a; }
   select,option { background:#151b23; color:var(--text); }
@@ -48,6 +48,7 @@
 <div id="top">
   <span id="brand">MUSTER</span>
   <a id="runsLink" href="/runs.html">runs</a>
+  <a id="chartsLink" href="/charts.html">charts</a>
   <span id="update"><label for="updates">update</label> <select id="updates"></select></span>
   <button id="current">load current</button>
   <span id="matchup"></span>
@@ -212,6 +213,7 @@ function refreshUpdates() {
     .then(response=>response.ok?response.json():Promise.reject())
     .then(manifest=>{
       setUpdateChoices(Array.isArray(manifest.updates)?manifest.updates:[]);
+      if (typeof manifest.run==="string") document.querySelector("#chartsLink").href="/charts.html?run="+encodeURIComponent(manifest.run);
       if (Number.isInteger(manifest.current)) latestUpdate=manifest.current;
       if (Number.isInteger(manifest.current)&&manifest.current!==replay.update) {
         setText(current,(mobile?"current ":"load current ")+manifest.current);

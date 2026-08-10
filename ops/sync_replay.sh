@@ -98,6 +98,22 @@ INDEX
     temporary_file=""
 fi
 
+# Machine-readable run list for the charts page's run switcher.
+temporary_file=$(mktemp "$published_root/.runsindex.XXXXXX")
+{
+    printf '['
+    separator=""
+    for manifest in $(ls -t "$published_root"/runs/*/replays/manifest.json 2>/dev/null); do
+        run=$(sed -n 's/.*"run":"\([^"]*\)".*/\1/p' "$manifest")
+        printf '%s"%s"' "$separator" "$run"
+        separator=,
+    done
+    printf ']\n'
+} > "$temporary_file"
+chmod 0644 "$temporary_file"
+mv -f "$temporary_file" "$published_root/runs/index.json"
+temporary_file=""
+
 # Dashboard: one row per published run, newest activity first.
 temporary_file=$(mktemp "$published_root/.runs.XXXXXX")
 {
@@ -120,8 +136,8 @@ HEAD
         case " $active_run ${MUSTER_CANNON_RUNS:-} " in
             *" $run "*) marker=' <span style="color:#ffc440">&#9679; live</span>' ;;
         esac
-        printf '<tr><td style="padding:4px 12px 4px 0;border-top:1px solid #232c38">%s%s</td><td style="padding:4px 12px 4px 0;border-top:1px solid #232c38">%s</td><td style="padding:4px 0;border-top:1px solid #232c38"><a style="color:#35a7ff" href="/runs/%s/replays/update-%s.html">update %s</a></td></tr>\n' \
-            "$run" "$marker" "$count" "$run" "$current" "$current"
+        printf '<tr><td style="padding:4px 12px 4px 0;border-top:1px solid #232c38">%s%s</td><td style="padding:4px 12px 4px 0;border-top:1px solid #232c38">%s</td><td style="padding:4px 0;border-top:1px solid #232c38"><a style="color:#35a7ff" href="/runs/%s/replays/update-%s.html">update %s</a> &#183; <a style="color:#8b98a5" href="/charts.html?run=%s">charts</a></td></tr>\n' \
+            "$run" "$marker" "$count" "$run" "$current" "$current" "$run"
     done
     printf '</table></div>\n'
 } > "$temporary_file"
