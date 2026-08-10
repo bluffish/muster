@@ -388,11 +388,11 @@ function draw() {
       else { territoryHexPath(ctx,territoryHexes[cell],worldWidth,worldHeight); ctx.fill(); ctx.stroke(); }
     };
     if (baseCells) {
-      // Each base is tinted in the color of the team that SCORES there:
-      // team_base_cells[0] is blue's own base, so red's target.
-      ctx.fillStyle="rgba(255,77,95,.12)"; ctx.strokeStyle="#ff4d5f";
-      for (const cell of baseCells[0]) drawCell(cell);
+      // Each base is tinted in its OWNER's color: defend your color,
+      // attack theirs. team_base_cells[0] is blue's own base.
       ctx.fillStyle="rgba(53,167,255,.12)"; ctx.strokeStyle="#35a7ff";
+      for (const cell of baseCells[0]) drawCell(cell);
+      ctx.fillStyle="rgba(255,77,95,.12)"; ctx.strokeStyle="#ff4d5f";
       for (const cell of baseCells[1]) drawCell(cell);
     } else {
       ctx.fillStyle="rgba(255,196,64,.10)"; ctx.strokeStyle="#ffc440";
