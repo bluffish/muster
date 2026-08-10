@@ -5,7 +5,7 @@ are preserved in its checkpoint (`train_args`) and in git history.
 
 ## v21 — assault scoring (rules 0.11, current)
 The bases. Each team owns one radius-1 base deep in its half of the long
-map — (-13,7) west / (13,-6) east, an x-mirror pair — and scores ONLY
+map — (-14,7) west / (14,-7) east, midline-centered mirror pair — and scores ONLY
 through influence on the enemy's base (weight 250/tile, ~76% of a team's
 attainable score; plain ground keeps weight 1; own base is worth 0 and
 matters only as denial). Chess-inspired structural fix after the truce

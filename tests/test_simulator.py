@@ -78,7 +78,7 @@ def test_hex_territory_starts_balanced_with_a_neutral_center_line():
     assert np.count_nonzero(TERRITORY_INITIAL_OWNER == 0) == 271
     assert np.count_nonzero(TERRITORY_INITIAL_OWNER == 1) == 271
     assert np.count_nonzero(TERRITORY_INITIAL_OWNER == -1) == 19
-    assert STRONGPOINT_CENTERS.tolist() == [[-13, 7], [13, -6]]
+    assert STRONGPOINT_CENTERS.tolist() == [[-14, 7], [14, -7]]
     assert len(STRONGPOINT_CELLS) == 14
     for team in (0, 1):
         own = BASE_CELLS_BY_TEAM[team]
@@ -185,7 +185,7 @@ def test_timeout_winner_integrates_weighted_control():
     # target (the east base); team 1 holds plain ground far from its own.
     state = {
         "position": np.array(
-            [centers[territory_cell(13, -6)], centers[territory_cell(-5, 2)]], np.float32
+            [centers[territory_cell(14, -7)], centers[territory_cell(-5, 2)]], np.float32
         ),
     }
     actions = np.zeros((1, 2, 4), np.float32)
@@ -223,7 +223,7 @@ def test_strongpoint_control_outweighs_wider_plain_control():
     centers = territory_centers(config)
     state = {
         "position": np.array(
-            [centers[territory_cell(13, -6)], centers[territory_cell(-5, 2)]], np.float32
+            [centers[territory_cell(14, -7)], centers[territory_cell(-5, 2)]], np.float32
         ),
     }
     actions = np.zeros((1, 2, 4), np.float32)

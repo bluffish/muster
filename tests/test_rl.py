@@ -111,7 +111,7 @@ def test_strongpoint_control_dominates_equal_plain_control():
     cell = {tuple(value): index for index, value in enumerate(TERRITORY_COORDINATES)}
     centers = territory_centers(config)
     env = RLEnv(config, device=device)
-    env.sim.reset({"position": centers[[cell[(13, -6)], cell[(-5, 2)]]]})
+    env.sim.reset({"position": centers[[cell[(14, -7)], cell[(-5, 2)]]]})
     env.observe()
     actions = torch.zeros((1, 2, 1, 4), device=env.device)
     _, facts = env.step(actions, reset_done=False)
@@ -1155,7 +1155,7 @@ def test_score_features_are_own_signed_and_accumulate():
     cell = {tuple(value): index for index, value in enumerate(TERRITORY_COORDINATES)}
     centers = territory_centers(config)
     env = RLEnv(config, device=device)
-    env.sim.reset({"position": centers[[cell[(13, -6)], cell[(-5, 2)]]]})
+    env.sim.reset({"position": centers[[cell[(14, -7)], cell[(-5, 2)]]]})
     env.observe()
     actions = torch.zeros((1, 2, 1, 4), device=env.device)
 

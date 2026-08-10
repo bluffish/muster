@@ -55,9 +55,10 @@ TERRITORY_INITIAL_OWNER = np.where(
 # half and scores ONLY through influence on the enemy's base (plus a small
 # symmetric value on plain ground). A team's own base is worth nothing to it
 # except denial: defenders standing on it dilute the attacker's share.
-# The pair is x-mirror symmetric (both centers sit at +0.5 rows), matching
-# the actor's side canonicalization, which reflects across x.
-BASE_CENTERS = np.array(((-13, 7), (13, -6)), np.int32)
+# Even columns have cells exactly on the horizontal midline, so the pair is
+# both centered and x-mirror symmetric, matching the actor's side
+# canonicalization, which reflects across x.
+BASE_CENTERS = np.array(((-14, 7), (14, -7)), np.int32)
 
 BASE_RADIUS = 1
 

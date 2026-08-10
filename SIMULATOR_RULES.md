@@ -551,8 +551,9 @@ ownership constant survives only as the pre-first-step reset value shown at
 frame zero, and control shares are zero until the first step.)
 
 Assault scoring (version 0.11) replaces the shared strongpoints with one
-radius-1 base per team, at axial centers `(-13, 7)` (team 0's, west) and
-`(13, -6)` (team 1's, east) — an x-mirror-symmetric pair, each seven tiles,
+radius-1 base per team, at axial centers `(-14, 7)` (team 0's, west) and
+`(14, -7)` (team 1's, east) — centered on the horizontal midline and
+x-mirror symmetric, each seven tiles,
 deep inside its owner's half. Scoring is per-team: team `t`'s cell weights
 `w_t` are `250` on each tile of the ENEMY base, `0` on its own base, and
 `1` on plain ground, for a per-team total weight of `2297`. The enemy base
