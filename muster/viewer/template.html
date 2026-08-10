@@ -13,6 +13,8 @@
   #top { border-bottom:1px solid var(--border); }
   #dock { border-top:1px solid var(--border); }
   #brand { font-weight:700; letter-spacing:.24em; color:var(--dim); font-size:12px; user-select:none; }
+  #runsLink { font:600 12px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; color:var(--dim); text-decoration:none; border:1px solid var(--border); border-radius:6px; padding:3px 8px; }
+  #runsLink:hover { color:var(--text); border-color:#38455a; }
   button,select { font:inherit; color:var(--dim); background:transparent; border:1px solid var(--border); border-radius:6px; padding:4px 10px; cursor:pointer; white-space:nowrap; }
   button:hover,select:hover { color:var(--text); border-color:#38455a; }
   select,option { background:#151b23; color:var(--text); }
@@ -45,6 +47,7 @@
 </style>
 <div id="top">
   <span id="brand">MUSTER</span>
+  <a id="runsLink" href="/runs.html">runs</a>
   <span id="update"><label for="updates">update</label> <select id="updates"></select></span>
   <button id="current">load current</button>
   <span id="matchup"></span>
@@ -96,9 +99,23 @@ const hexRadius=cfg.territory_radius||0, hexArena=cfg.arena_shape==="hex";
 const territoryWidth=cfg.territory_width||32, territoryHeight=cfg.territory_height||18;
 const territoryCells=hexRadius?cfg.territory_cells:territoryWidth*territoryHeight;
 const strongpointCells=Array.isArray(cfg.strongpoint_cells)?cfg.strongpoint_cells:[];
-const strongpointSet=new Set(strongpointCells), strongpointWeight=cfg.strongpoint_weight||1;
-const territoryTotalWeight=territoryCells+strongpointCells.length*(strongpointWeight-1);
-const territoryCellWeight=cell=>strongpointSet.has(cell)?strongpointWeight:1;
+const strongpointWeight=cfg.strongpoint_weight||1;
+// Per-team score weights. Under assault scoring each team scores only on
+// the ENEMY base (own base weight 0); legacy replays weight strongpoints
+// symmetrically. The winner is the sign of the TIME-INTEGRAL of the
+// weighted advantage, so both the level and the integral are shown.
+const teamBaseCells=Array.isArray(cfg.team_base_cells)?cfg.team_base_cells:null;
+const scoreW0=new Float32Array(territoryCells).fill(1);
+const scoreW1=new Float32Array(territoryCells).fill(1);
+if (teamBaseCells) {
+  for (const cell of teamBaseCells[1]) scoreW0[cell]=strongpointWeight;
+  for (const cell of teamBaseCells[0]) scoreW0[cell]=0;
+  for (const cell of teamBaseCells[0]) scoreW1[cell]=strongpointWeight;
+  for (const cell of teamBaseCells[1]) scoreW1[cell]=0;
+} else for (const cell of strongpointCells) { scoreW0[cell]=strongpointWeight; scoreW1[cell]=strongpointWeight; }
+let scoreTotal=0;
+for (let cell=0;cell<territoryCells;cell++) scoreTotal+=scoreW0[cell];
+const territoryTotalWeight=scoreTotal;
 const hexSize=cfg.hex_size||cfg.world_width/(3*hexRadius+2);
 const territoryHexes=[];
 if (Array.isArray(cfg.territory_axial)) territoryHexes.push(...cfg.territory_axial);
@@ -118,6 +135,30 @@ else if (territoryOwners) for (let frame=1;frame<frameCount;frame++) {
   let changed=false, base=frame*territoryCells, previousBase=base-territoryCells;
   for (let cell=0;cell<territoryCells&&!changed;cell++) changed=territoryOwners[base+cell]!==territoryOwners[previousBase+cell];
   territoryFrame[frame]=changed?frame:territoryFrame[frame-1];
+}
+// Running mean of the weighted advantage: the number whose final sign IS
+// the winner (the level alone can disagree with the verdict at the end).
+const meanAdvantage=(controlShares||territoryOwners)?new Float32Array(frameCount):null;
+if (meanAdvantage) {
+  let accumulated=0;
+  for (let frame=1;frame<frameCount;frame++) {
+    let advantage=0;
+    if (controlShares) {
+      const base=frame*territoryCells*2;
+      for (let cell=0;cell<territoryCells;cell++)
+        advantage+=scoreW0[cell]*controlShares[base+cell*2]-scoreW1[cell]*controlShares[base+cell*2+1];
+      advantage/=255*scoreTotal;
+    } else {
+      const base=frame*territoryCells;
+      for (let cell=0;cell<territoryCells;cell++) {
+        const owner=territoryOwners[base+cell];
+        if (owner===0) advantage+=scoreW0[cell]; else if (owner===1) advantage-=scoreW1[cell];
+      }
+      advantage/=scoreTotal;
+    }
+    accumulated+=advantage;
+    meanAdvantage[frame]=accumulated/frame;
+  }
 }
 const screenState=new Float32Array(soldierCount*4);
 const deathFrame=new Uint16Array(soldierCount).fill(65535);
@@ -163,11 +204,15 @@ function setUpdateChoices(values) {
   }));
 }
 setUpdateChoices([]);
+let latestUpdate=Number.isInteger(replay.update)?replay.update:null;
 function refreshUpdates() {
-  fetch("/replays/manifest.json",{cache:"no-store"})
+  // Relative fetch: every published replay sits beside its run's manifest,
+  // whether reached via /replays/ or /runs/<run>/replays/.
+  fetch("manifest.json",{cache:"no-store"})
     .then(response=>response.ok?response.json():Promise.reject())
     .then(manifest=>{
       setUpdateChoices(Array.isArray(manifest.updates)?manifest.updates:[]);
+      if (Number.isInteger(manifest.current)) latestUpdate=manifest.current;
       if (Number.isInteger(manifest.current)&&manifest.current!==replay.update) {
         setText(current,(mobile?"current ":"load current ")+manifest.current);
         current.classList.add("fresh");
@@ -240,7 +285,7 @@ function updateTerritory(frameIndex,pixelWidth,pixelHeight) {
     const base=frameIndex*territoryCells*2;
     for (let cell=0;cell<territoryCells;cell++) {
       const s0=controlShares[base+cell*2]/255, s1=controlShares[base+cell*2+1]/255;
-      territory0+=territoryCellWeight(cell)*s0; territory1+=territoryCellWeight(cell)*s1;
+      territory0+=scoreW0[cell]*s0; territory1+=scoreW1[cell]*s1;
       const claimed=s0+s1;
       if (claimed<0.02) continue;
       const r=Math.round((53*s0+255*s1)/claimed), g=Math.round((167*s0+77*s1)/claimed), b=Math.round((255*s0+95*s1)/claimed);
@@ -267,7 +312,7 @@ function updateTerritory(frameIndex,pixelWidth,pixelHeight) {
     for (let cell=0;cell<territoryCells;cell++) {
       const owner=territoryOwners[base+cell];
       if (owner<0) continue;
-      if (owner===0) territory0+=territoryCellWeight(cell); else territory1+=territoryCellWeight(cell);
+      if (owner===0) territory0+=scoreW0[cell]; else territory1+=scoreW1[cell];
       if (!hexRadius) {
         territoryContext.fillStyle=owner===0?"rgba(53,167,255,.28)":"rgba(255,77,95,.28)";
         const x=cell%territoryWidth, y=Math.floor(cell/territoryWidth);
@@ -503,11 +548,18 @@ function draw() {
     scoreKey=shareKey;
     scoreBlue.style.width=(scoreShare0*100).toFixed(1)+"%";
     scoreRed.style.width=(scoreShare1*100).toFixed(1)+"%";
-    scorebar.title=territoryText;
-    const advantage=scoreShare0-scoreShare1;
-    setText(deltaChip,"Δ "+(advantage>=0?"+":"")+advantage.toFixed(3));
-    deltaChip.style.color=advantage>0.001?"var(--blue)":advantage<-0.001?"var(--red)":"";
+    scorebar.title=territoryText+" | winner = sign of the time-integral shown as the second number";
   }
+  const advantage=scoreShare0-scoreShare1;
+  let deltaText="Δ "+(advantage>=0?"+":"")+advantage.toFixed(3);
+  let decisive=advantage;
+  if (meanAdvantage) {
+    const banked=meanAdvantage[lower];
+    deltaText+=" · Σ "+(banked>=0?"+":"")+banked.toFixed(3);
+    decisive=banked;
+  }
+  setText(deltaChip,deltaText);
+  deltaChip.style.color=decisive>0.001?"var(--blue)":decisive<-0.001?"var(--red)":"";
   if (lower===lastFrame&&Number.isInteger(replay.winner)) {
     const verdict=replay.winner<0?"DRAW":replay.winner===0?"BLUE WINS":"RED WINS";
     ctx.font="bold "+Math.round(26*dpr)+"px ui-monospace,Menlo,Consolas,monospace"; ctx.textAlign="center";
@@ -610,8 +662,8 @@ canvas.addEventListener("pointerup",endPointer);
 canvas.addEventListener("pointercancel",endPointer);
 trailsButton.onclick=toggleTrails;
 play.onclick=toggle;
-current.onclick=()=>location.replace("/?current="+Date.now());
-updates.onchange=()=>location.replace("/replays/update-"+updates.value+".html");
+current.onclick=()=>{ if (latestUpdate!==null) location.replace("update-"+latestUpdate+".html"); };
+updates.onchange=()=>location.replace("update-"+updates.value+".html");
 territoryButton.onclick=toggleTerritory;
 slider.oninput=()=>{ cursor=Number(slider.value); setPlaying(false); invalidate(); };
 document.onkeydown=e=>{

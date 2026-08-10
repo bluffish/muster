@@ -65,10 +65,11 @@ def test_browser_replay_contains_territory_overlay(tmp_path):
     assert '"learner_team":0' in html
     assert 'nearest:"nearest-charge"' in html
     assert "recorded steps/s" not in html
-    assert 'location.replace("/?current="+Date.now())' in html
-    assert 'fetch("/replays/manifest.json"' in html
+    assert 'location.replace("update-"+latestUpdate+".html")' in html
+    assert 'fetch("manifest.json"' in html
     assert "setInterval(refreshUpdates,10000)" in html
-    assert '"/replays/update-"+updates.value+".html"' in html
+    assert '"update-"+updates.value+".html"' in html
+    assert "meanAdvantage" in html
     assert "territory (T)" in html
     assert "Uint16Array" in html
     assert 'maxDpr=mobile?1:2' in html
