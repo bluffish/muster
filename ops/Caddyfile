@@ -29,6 +29,14 @@ muster.bowen.sh {
 		X-Frame-Options "SAMEORIGIN"
 	}
 
+	# Replays migrated to the Hugging Face dataset no longer exist as local
+	# HTML; send those URLs to the viewer app, which fetches the data.
+	@migratedReplay {
+		path_regexp rep ^/runs/([^/]+)/replays/update-([0-9]+)\.html$
+		not file
+	}
+	redir @migratedReplay "/view.html?run={re.rep.1}&u={re.rep.2}" 302
+
 	file_server
 }
 
