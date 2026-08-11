@@ -21,6 +21,7 @@ from muster.rl.policy import Policy
 
 if TYPE_CHECKING:
     from muster.rl.pool import OpponentPool
+from muster.sim.geometry import arena_vertices
 from muster.sim.constants import (
     ENTITY_RADIUS,
     BASE_CELLS_BY_TEAM,
@@ -146,6 +147,7 @@ class RolloutReplay:
                 "strongpoint_weight": STRONGPOINT_WEIGHT,
                 "team_base_cells": [cells.tolist() for cells in BASE_CELLS_BY_TEAM],
                 "entity_radius": ENTITY_RADIUS,
+                "arena_vertices": arena_vertices(config).tolist(),
             },
             "team": team,
             "frames": [

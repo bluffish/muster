@@ -406,6 +406,20 @@ function draw() {
   if (hexRadius) prepareTerritoryGeometry(worldWidth,worldHeight);
   const lower=Math.min(Math.floor(cursor),lastFrame), upper=Math.min(lower+1,lastFrame), amount=cursor-lower;
   ctx.fillStyle="#0e1116"; ctx.fillRect(0,0,width,height);
+  // The physical arena is bounded by straight walls that circumscribe the
+  // jagged tile edge; draw that true floor so wall pockets read as board
+  // margin rather than soldiers escaping the world.
+  if (Array.isArray(cfg.arena_vertices)&&cfg.arena_vertices.length) {
+    ctx.beginPath();
+    for (let i=0;i<cfg.arena_vertices.length;i++) {
+      const wx=left+cfg.arena_vertices[i][0]*scale;
+      const wy=bottom-cfg.arena_vertices[i][1]*scale;
+      i?ctx.lineTo(wx,wy):ctx.moveTo(wx,wy);
+    }
+    ctx.closePath();
+    ctx.fillStyle="#161c24"; ctx.fill();
+    ctx.strokeStyle="#39434f"; ctx.lineWidth=Math.max(1,dpr); ctx.stroke();
+  }
   ctx.save();
   if (hexRadius&&territoryBoard) {
     ctx.translate(left,top); ctx.scale(geometryRatio,geometryRatio); ctx.clip(territoryBoard);

@@ -12,6 +12,7 @@ from pathlib import Path
 import numpy as np
 
 from muster.sim import Config
+from muster.sim.geometry import arena_vertices
 from muster.sim.constants import (
     ENTITY_RADIUS,
     BASE_CELLS_BY_TEAM,
@@ -122,6 +123,7 @@ def record_episode(simulator: object, policy: Policy | None = None) -> dict[str,
             "strongpoint_weight": STRONGPOINT_WEIGHT,
             "team_base_cells": [cells.tolist() for cells in BASE_CELLS_BY_TEAM],
             "entity_radius": ENTITY_RADIUS,
+            "arena_vertices": arena_vertices(config).tolist(),
         },
         "team": np.asarray(state["team"], dtype=int).tolist(),
         "frames": [],
