@@ -10,6 +10,14 @@ remote=ubuntu@52.90.113.210
 identity=/root/.ssh/id_ed25519
 ```
 
+**bowen3 torch lives in tmpfs.** The root disk (33GB) cannot hold torch, so
+it is staged at `/dev/shm/torch` (hence `PYTHONPATH=/dev/shm/torch`
+everywhere). Every reboot wipes it; restage with:
+`TMPDIR=/dev/shm/piptmp .venv/bin/pip install --target=/dev/shm/torch \
+--no-cache-dir torch --index-url https://download.pytorch.org/whl/cu128`
+(pip's temp must also point at tmpfs or the install ENOSPCs). bowen3 is in
+the `spring` AWS account; key pushes need `--profile spring`.
+
 Game rules live in `SIMULATOR_RULES.md` (version 0.11: assault scoring on the elongated arena, health-weighted soft influence
 control with presence requirement, time-integral scoring, score
 observability). Version history and the reasoning behind each change:
