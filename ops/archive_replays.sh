@@ -31,8 +31,13 @@ ensure_remote() {
 }
 
 mkdir -p "$archive_directory"
-ensure_remote
-remote_files=$(remote_ssh "find '$source_directory' -maxdepth 1 -type f -name 'update-*.html' -printf '%f\\n'" | sort -V)
+# Best-effort: the AWS instance may be stopped, replaced, or retired; its
+# absence must not block the Cannon pulls below.
+if ! ensure_remote 2>/dev/null || ! remote_ssh true 2>/dev/null; then
+    remote_files=""
+else
+    remote_files=$(remote_ssh "find '$source_directory' -maxdepth 1 -type f -name 'update-*.html' -printf '%f\\n'" | sort -V)
+fi
 
 for replay_name in $remote_files; do
     update=${replay_name#update-}
