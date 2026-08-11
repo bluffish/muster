@@ -70,7 +70,7 @@ def test_browser_replay_contains_territory_overlay(tmp_path):
     assert "setInterval(refreshUpdates,10000)" in html
     assert '"update-"+updates.value+".html"' in html
     assert "meanAdvantage" in html
-    assert "territory (T)" in html
+    assert "territory<kbd>T</kbd>" in html
     assert "Uint16Array" in html
     assert 'maxDpr=mobile?1:2' in html
     assert 'targetFrameMs=1000/(mobile?20:30)' in html
