@@ -81,6 +81,12 @@ class RolloutReplay:
     def start(self) -> None:
         self.next_frame = 0
         self.learner_mode = int(self.env.mode[self.env_index, self.learner_team])
+        # Per-soldier episode roles, in replay soldier order (team 0 then 1).
+        self.episode_roles = (
+            self.env.role[self.env_index].reshape(-1).cpu().tolist()
+            if self.env.role is not None
+            else None
+        )
         self.capture()
 
     def capture(self) -> None:
@@ -164,6 +170,7 @@ class RolloutReplay:
             "opponent_mode": self.opponent_mode,
             "learner_team": self.learner_team,
             "learner_mode": getattr(self, "learner_mode", 0),
+            "soldier_roles": getattr(self, "episode_roles", None),
             "statistics": {
                 "decision_steps": frame_count - 1,
                 "simulated_seconds": (frame_count - 1) * config.decision_dt,

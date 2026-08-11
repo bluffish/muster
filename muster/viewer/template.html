@@ -551,11 +551,13 @@ function draw() {
       ctx.beginPath(); ctx.moveTo(x,y); ctx.arc(x,y,perceptionRadius*scale*.5,facing-Math.PI/3,facing+Math.PI/3); ctx.closePath(); ctx.fill();
       const degrees=((Math.round(screenState[selected*4+2]*180/Math.PI)%360)+360)%360;
       inspect.className=teams[selected]===0?"blue":"red";
-      inspect.textContent=(teams[selected]===0?"blue":"red")+" #"+selected+" · hp "+Math.round(health*100)+"% · facing "+degrees+"°";
+      const roleTag=Array.isArray(replay.soldier_roles)?" · role "+replay.soldier_roles[selected]:"";
+      inspect.textContent=(teams[selected]===0?"blue":"red")+" #"+selected+" · hp "+Math.round(health*100)+"% · facing "+degrees+"°"+roleTag;
       inspect.hidden=false;
     } else {
       inspect.className=teams[selected]===0?"blue":"red";
-      inspect.textContent=(teams[selected]===0?"blue":"red")+" #"+selected+" · down";
+      const downRole=Array.isArray(replay.soldier_roles)?" · role "+replay.soldier_roles[selected]:"";
+      inspect.textContent=(teams[selected]===0?"blue":"red")+" #"+selected+" · down"+downRole;
       inspect.hidden=false;
     }
   } else inspect.hidden=true;
