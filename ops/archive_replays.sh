@@ -23,6 +23,7 @@ ensure_remote() {
         return
     fi
     /usr/local/bin/aws ec2-instance-connect send-ssh-public-key \
+        --profile spring \
         --instance-id "$instance" \
         --availability-zone "$availability_zone" \
         --instance-os-user ubuntu \
