@@ -125,8 +125,8 @@ temporary_file=$(mktemp "$published_root/.runs.XXXXXX")
 <title>Muster - runs</title>
 <body style="background:#0e1116;color:#c9d4df;font:14px/1.7 ui-monospace,SFMono-Regular,Menlo,monospace;margin:0;padding:36px 20px">
 <div style="max-width:640px;margin:0 auto">
-<div style="font-weight:700;letter-spacing:.24em;color:#8b98a5;font-size:12px">MUSTER</div>
-<h1 style="font-size:20px;margin:8px 0 20px">Training runs</h1>
+<div style="display:flex;align-items:center;gap:7px;font-weight:600;letter-spacing:-.02em;color:#c9d4df;font-size:14px"><svg width="18" height="16" viewBox="0 0 22 20"><path d="M6 1.3 10.5 3.9v5.2L6 11.7 1.5 9.1V3.9Z" fill="#35a7ff"/><path d="M16 1.3 20.5 3.9v5.2L16 11.7 11.5 9.1V3.9Z" fill="#ff4d5f"/><path d="M11 8.3 15.5 10.9v5.2L11 18.7 6.5 16.1v-5.2Z" fill="#3a4658"/></svg>muster</div>
+<h1 style="font-size:19px;margin:10px 0 20px;font-weight:600">Training runs</h1>
 <table style="border-collapse:collapse;width:100%">
 <tr style="color:#8b98a5;text-align:left"><th style="padding:4px 12px 4px 0">run</th><th style="padding:4px 12px 4px 0">replays</th><th style="padding:4px 0">latest</th></tr>
 HEAD
