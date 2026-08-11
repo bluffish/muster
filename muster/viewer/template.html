@@ -142,8 +142,9 @@ else if (territoryOwners) for (let frame=1;frame<frameCount;frame++) {
   for (let cell=0;cell<territoryCells&&!changed;cell++) changed=territoryOwners[base+cell]!==territoryOwners[previousBase+cell];
   territoryFrame[frame]=changed?frame:territoryFrame[frame-1];
 }
-// Running mean of the weighted advantage: the number whose final sign IS
-// the winner (the level alone can disagree with the verdict at the end).
+// Accumulated weighted advantage, normalized by full episode length: a
+// scoreboard that only moves in the direction of the current lead, whose
+// final sign IS the winner (the level alone can disagree at the end).
 const meanAdvantage=(controlShares||territoryOwners)?new Float32Array(frameCount):null;
 if (meanAdvantage) {
   let accumulated=0;
@@ -163,7 +164,7 @@ if (meanAdvantage) {
       advantage/=scoreTotal;
     }
     accumulated+=advantage;
-    meanAdvantage[frame]=accumulated/frame;
+    meanAdvantage[frame]=accumulated/(frameCount-1);
   }
 }
 const screenState=new Float32Array(soldierCount*4);
