@@ -148,7 +148,7 @@ def test_mappo_policy_and_value_heads_are_per_soldier():
     actions, _, values, _ = policy.act(state)
     assert policy.policy_head.in_features == policy.value_head.in_features == 32
     assert policy.global_value_encoder[-1].out_features == 32
-    assert CHECKPOINT_VERSION == 13
+    assert CHECKPOINT_VERSION == 14
     assert policy.tile_encoder[0].in_features == 9
     assert policy.backbone[0].in_features == 3 * 8 + 16
     assert policy.entity_query.out_features == 16
@@ -373,6 +373,42 @@ def test_actor_is_side_equivariant_at_the_symmetric_start():
     torch.testing.assert_close(values[:, 0], values[:, 1], rtol=1e-5, atol=1e-6)
 
 
+def test_per_soldier_roles_bias_actions_and_persist_per_episode():
+    torch = pytest.importorskip("torch")
+    wp = pytest.importorskip("warp")
+    from policy import Policy
+    from rl_env import RLEnv
+    from simulator import Config
+
+    device = "cuda" if torch.cuda.is_available() and wp.is_cuda_available() else "cpu"
+    env = RLEnv(
+        Config(soldiers_per_team=4, maximum_episode_seconds=0.2),
+        num_envs=2,
+        device=device,
+        role_count=8,
+    )
+    state = env.reset()
+    assert state.role.shape == (2, 2, 4)
+
+    policy = Policy(hidden_size=32, entity_size=8, tile_size=16, role_count=8).eval()
+    policy = policy.to(env.device)
+    with torch.no_grad():
+        first, _ = policy.actor_step(state, None, deterministic=True)
+        flipped = state._replace(role=(state.role + 1) % 8)
+        second, _ = policy.actor_step(flipped, None, deterministic=True)
+    alive = state.alive.bool()
+    delta = (first - second).norm(dim=-1)[alive]
+    assert float(delta.min()) > 1e-4  # roles visibly shift every soldier
+
+    # Roles hold within an episode and resample when it ends.
+    before = env.role.clone()
+    env.step(torch.zeros((2, 2, 4, 4), device=env.device))
+    assert torch.equal(env.role, before)
+    for _ in range(env.config.maximum_decision_steps):
+        env.step(torch.zeros((2, 2, 4, 4), device=env.device))
+    assert not torch.equal(env.role, before)
+
+
 def test_nearest_enemy_opponent_controls_only_the_fixed_team():
     torch = pytest.importorskip("torch")
     wp = pytest.importorskip("warp")
@@ -387,10 +423,12 @@ def test_nearest_enemy_opponent_controls_only_the_fixed_team():
         num_envs=2,
         device=device,
     )
+    # Targets sit inside the charger's fair vision radius (5): 4 apart
+    # horizontally, sqrt(17) on the diagonals.
     positions = np.array(
         [
-            [[25, 30], [25, 40], [35, 30], [35, 39]],
-            [[25, 30], [25, 40], [35, 31], [35, 40]],
+            [[25, 30], [25, 40], [29, 30], [29, 39]],
+            [[25, 30], [25, 40], [29, 31], [29, 40]],
         ],
         np.float32,
     )
@@ -402,11 +440,11 @@ def test_nearest_enemy_opponent_controls_only_the_fixed_team():
     actions = opponent.act()
     world = env.actions_to_sim(actions).numpy().reshape(2, 4, 4)
 
-    diagonal = np.float32(1 / np.sqrt(101))
+    diagonal = np.float32(1 / np.sqrt(17))
     expected = np.array(
         [
-            [[0, 0], [0, 0], [-1, 0], [-10 * diagonal, diagonal]],
-            [[10 * diagonal, diagonal], [1, 0], [0, 0], [0, 0]],
+            [[0, 0], [0, 0], [-1, 0], [-4 * diagonal, diagonal]],
+            [[4 * diagonal, diagonal], [1, 0], [0, 0], [0, 0]],
         ],
         np.float32,
     )

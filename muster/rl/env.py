@@ -66,6 +66,7 @@ class LocalState(NamedTuple):
     mirror_y: torch.Tensor
     mode: torch.Tensor | None = None
     neighbors: torch.Tensor | None = None
+    role: torch.Tensor | None = None
 
 
 def entity_neighbors(
@@ -347,8 +348,11 @@ def _nearest_enemy_actions(
                 closest = other
                 closest_distance = distance
 
-    # With no living enemy, march on the enemy base: under assault scoring
-    # (rules 0.11) that is the only ground worth taking.
+    # Fair vision: only enemies within the same perception radius the
+    # network has count as visible; otherwise march on the enemy base,
+    # the only ground worth taking under assault scoring.
+    if closest >= 0 and closest_distance > ENTITY_RADIUS * ENTITY_RADIUS:
+        closest = -1
     target = position[index]
     if closest >= 0:
         target = position[closest]
@@ -404,9 +408,10 @@ class RLEnv:
         device: str = "cuda",
         simulator: GpuSimulator | None = None,
         mode_count: int = 1,
+        role_count: int = 1,
     ):
-        if mode_count < 1:
-            raise ValueError("mode_count must be positive")
+        if mode_count < 1 or role_count < 1:
+            raise ValueError("mode_count and role_count must be positive")
         self.sim = simulator or GpuSimulator(config, num_envs, device)
         self.config = self.sim.config
         self.num_envs = self.sim.num_envs
@@ -414,6 +419,14 @@ class RLEnv:
         self.device = torch.device(str(self.sim.device))
         self.mode_count = int(mode_count)
         self.mode = torch.zeros((self.num_envs, 2), dtype=torch.long, device=self.device)
+        # Per-soldier episode roles: persistent minority-capable exploration.
+        # Each soldier draws an independent role per episode; the policy is
+        # conditioned on it and biased by it, so persistent behavioral
+        # deviations by arbitrary subsets are sampled with real probability.
+        self.role_count = int(role_count)
+        self.role = torch.zeros(
+            (self.num_envs, 2, self.soldiers_per_team), dtype=torch.long, device=self.device
+        )
         self.mode_probabilities: torch.Tensor | None = None
         env_index = torch.arange(self.num_envs, device=self.device)
         self.mirror_y = (1 - 2 * ((env_index // 2) % 2)).to(torch.float32)
@@ -488,7 +501,19 @@ class RLEnv:
         self._action_sign[..., 3] = self.mirror_y[:, None, None]
         self._world_actions = wp.from_torch(self._actions.view(-1, 4), dtype=ACTION_DTYPE)
         self._resample_modes()
+        self._resample_roles()
         self.observe()
+
+    def _resample_roles(self, finished: torch.Tensor | None = None) -> None:
+        """Draw fresh per-soldier episode roles, everywhere or where ended."""
+        fresh = torch.randint(
+            self.role_count, self.role.shape, dtype=torch.long, device=self.device
+        )
+        if finished is None:
+            self.role.copy_(fresh)
+        else:
+            keep = finished.view(-1, 1, 1).bool()
+            self.role.copy_(torch.where(keep, fresh, self.role))
 
     def _resample_modes(self, finished: torch.Tensor | None = None) -> None:
         """Draw fresh per-team episode modes, everywhere or where episodes ended."""
@@ -617,6 +642,7 @@ class RLEnv:
             self.mirror_y,
             self.mode,
             self.neighbors,
+            self.role,
         )
 
     def observe(self) -> LocalState:
@@ -629,6 +655,7 @@ class RLEnv:
         with self._scope():
             self.sim.reset()
             self._resample_modes()
+            self._resample_roles()
             self._refresh()
         self._refresh_neighbors()
         return self.state()
@@ -677,6 +704,7 @@ class RLEnv:
             if reset_done:
                 self.sim.reset(mask=self.sim.done)
                 self._resample_modes(self.facts["done"])
+                self._resample_roles(self.facts["done"])
             if observe:
                 self._refresh()
         if observe:

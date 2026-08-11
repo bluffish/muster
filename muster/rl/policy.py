@@ -21,7 +21,7 @@ from muster.sim import (
 )
 
 ACTION_SIZE = 4
-CHECKPOINT_VERSION = 13
+CHECKPOINT_VERSION = 14
 ENTITY_OFFSET_SCALE = 8.0
 
 
@@ -39,10 +39,14 @@ class Policy(nn.Module):
         log_std_floor: float = -5.0,
         memory_size: int = 0,
         message_size: int = 0,
+        role_count: int = 0,
+        role_size: int = 8,
     ):
         super().__init__()
         if mode_count < 0 or mode_size < 1:
             raise ValueError("mode_count must be non-negative and mode_size positive")
+        if role_count < 0 or role_size < 1:
+            raise ValueError("role_count must be non-negative and role_size positive")
         if not -5.0 <= log_std_floor < 1.0:
             raise ValueError("log_std_floor must be in [-5, 1)")
         if memory_size < 0 or message_size < 0:
@@ -54,6 +58,8 @@ class Policy(nn.Module):
         self.local_radius = local_radius
         self.mode_count = mode_count
         self.mode_size = mode_size
+        self.role_count = role_count
+        self.role_size = role_size
         self.log_std_floor = log_std_floor
         self.memory_size = memory_size
         self.message_size = message_size
@@ -117,7 +123,9 @@ class Policy(nn.Module):
         )
         self.tile_query = nn.Linear(entity_size, tile_size, bias=False)
         self.tile_key = nn.Linear(tile_size, tile_size, bias=False)
-        conditioning = mode_size if mode_count else 0
+        conditioning = (mode_size if mode_count else 0) + (
+            role_size if role_count else 0
+        )
         self.backbone = nn.Sequential(
             nn.Linear(3 * entity_size + tile_size + conditioning, hidden_size),
             nn.SiLU(),
@@ -140,6 +148,9 @@ class Policy(nn.Module):
         if mode_count:
             self.mode_embedding = nn.Embedding(mode_count, mode_size)
             self.mode_policy_bias = nn.Linear(mode_size, ACTION_SIZE, bias=False)
+        if role_count:
+            self.role_embedding = nn.Embedding(role_count, role_size)
+            self.role_policy_bias = nn.Linear(role_size, ACTION_SIZE, bias=False)
         self.log_std = nn.Parameter(torch.full((ACTION_SIZE,), -0.5))
         for layer in self.modules():
             if isinstance(layer, nn.Linear):
@@ -154,6 +165,12 @@ class Policy(nn.Module):
             # mean from the first update, so optimization shapes the modes
             # instead of deciding whether they exist.
             nn.init.orthogonal_(self.mode_policy_bias.weight, 0.3)
+        if role_count:
+            nn.init.orthogonal_(self.role_embedding.weight)
+            # Same rationale, per soldier: roles must visibly bias behavior
+            # from the first update so persistent minority deviations are
+            # actually sampled rather than merely representable.
+            nn.init.orthogonal_(self.role_policy_bias.weight, 0.3)
         self.use_bf16 = True
 
     @property
@@ -168,6 +185,8 @@ class Policy(nn.Module):
             "log_std_floor": self.log_std_floor,
             "memory_size": self.memory_size,
             "message_size": self.message_size,
+            "role_count": self.role_count,
+            "role_size": self.role_size,
         }
 
     def initial_memory(self, state: LocalState) -> torch.Tensor | None:
@@ -199,6 +218,13 @@ class Policy(nn.Module):
         if state.mode is None:
             raise ValueError("this policy requires state.mode episode latents")
         return self.mode_embedding(state.mode)
+
+    def _role_embedding(self, state: LocalState) -> torch.Tensor | None:
+        if not self.role_count:
+            return None
+        if state.role is None:
+            raise ValueError("this policy requires state.role episode latents")
+        return self.role_embedding(state.role)
 
     def _compute(self, state: LocalState):
         if self.use_bf16 and state.features.device.type == "cuda":
@@ -313,6 +339,7 @@ class Policy(nn.Module):
         related_cells: torch.Tensor,
         related_alive: torch.Tensor,
         mode_embed: torch.Tensor | None = None,
+        role_embed: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         sums, counts = self._tile_aggregates(encoded, related_cells, related_alive)
         own_cells = torch.where(state.alive.bool(), state.cells.long(), 0)
@@ -377,15 +404,22 @@ class Policy(nn.Module):
             inputs.append(
                 mode_embed.to(context.dtype).unsqueeze(-2).expand(-1, -1, soldiers, -1)
             )
+        if role_embed is not None:
+            inputs.append(role_embed.to(context.dtype))
         hidden = self.backbone(torch.cat(inputs, dim=-1))
         return hidden, sums, counts
 
     def _policy_mean(
-        self, hidden: torch.Tensor, mode_embed: torch.Tensor | None
+        self,
+        hidden: torch.Tensor,
+        mode_embed: torch.Tensor | None,
+        role_embed: torch.Tensor | None = None,
     ) -> torch.Tensor:
         mean = self.policy_head(hidden)
         if mode_embed is not None:
             mean = mean + self.mode_policy_bias(mode_embed.to(mean.dtype)).unsqueeze(-2)
+        if role_embed is not None:
+            mean = mean + self.role_policy_bias(role_embed.to(mean.dtype))
         return mean
 
     def _values(
@@ -470,12 +504,13 @@ class Policy(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None]:
         with self._compute(state):
             mode_embed = self._mode_embedding(state)
+            role_embed = self._role_embedding(state)
             encoded, related, cells, alive = self._encode(state)
             hidden, sums, counts = self._backbone(
-                state, encoded, related, cells, alive, mode_embed
+                state, encoded, related, cells, alive, mode_embed, role_embed
             )
             combined, new_memory = self._advance_memory(state, hidden, memory)
-            distribution = self._distribution(self._policy_mean(combined, mode_embed))
+            distribution = self._distribution(self._policy_mean(combined, mode_embed, role_embed))
             raw = distribution.mean if deterministic else distribution.sample()
             actions = raw.float().tanh()
             mask = state.alive.bool().to(actions.dtype)
@@ -495,12 +530,13 @@ class Policy(nn.Module):
         """Actor forward without the value head, carrying recurrent state."""
         with self._compute(state):
             mode_embed = self._mode_embedding(state)
+            role_embed = self._role_embedding(state)
             encoded, related, cells, alive = self._encode(state)
             hidden, _, _ = self._backbone(
-                state, encoded, related, cells, alive, mode_embed
+                state, encoded, related, cells, alive, mode_embed, role_embed
             )
             combined, new_memory = self._advance_memory(state, hidden, memory)
-            distribution = self._distribution(self._policy_mean(combined, mode_embed))
+            distribution = self._distribution(self._policy_mean(combined, mode_embed, role_embed))
             raw = distribution.mean if deterministic else distribution.sample()
             actions = raw.float().tanh() * state.alive.bool().unsqueeze(-1)
             return actions, new_memory
@@ -517,12 +553,13 @@ class Policy(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None]:
         with self._compute(state):
             mode_embed = self._mode_embedding(state)
+            role_embed = self._role_embedding(state)
             encoded, related, cells, alive = self._encode(state)
             hidden, sums, counts = self._backbone(
-                state, encoded, related, cells, alive, mode_embed
+                state, encoded, related, cells, alive, mode_embed, role_embed
             )
             combined, new_memory = self._advance_memory(state, hidden, memory)
-            distribution = self._distribution(self._policy_mean(combined, mode_embed))
+            distribution = self._distribution(self._policy_mean(combined, mode_embed, role_embed))
             bounded = actions.float().clamp(-1 + 1e-6, 1 - 1e-6)
             raw = 0.5 * (torch.log1p(bounded) - torch.log1p(-bounded))
             log_prob = self._log_prob(distribution, raw, bounded)
@@ -540,9 +577,10 @@ class Policy(nn.Module):
     ) -> torch.Tensor:
         with self._compute(state):
             mode_embed = self._mode_embedding(state)
+            role_embed = self._role_embedding(state)
             encoded, related, cells, alive = self._encode(state)
             hidden, sums, counts = self._backbone(
-                state, encoded, related, cells, alive, mode_embed
+                state, encoded, related, cells, alive, mode_embed, role_embed
             )
             _, new_memory = self._advance_memory(state, hidden, memory)
             return self._values(state, hidden, sums, counts, mode_embed, new_memory)

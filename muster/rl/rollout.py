@@ -31,7 +31,7 @@ from muster.sim.constants import (
     TERRITORY_COORDINATES,
 )
 
-STATE_KEYS = ("features", "cells", "alive", "owners", "mirror_y", "mode", "neighbors")
+STATE_KEYS = ("features", "cells", "alive", "owners", "mirror_y", "mode", "neighbors", "role")
 
 def select_state(state: LocalState, index) -> LocalState:
     return LocalState(*(tensor[index] for tensor in state))
@@ -244,6 +244,9 @@ def make_rollout(
         "owners": torch.empty((length, envs, state.owners.shape[-1]), dtype=torch.int8, device=device),
         "mirror_y": torch.empty((length, envs), dtype=torch.int8, device=device),
         "mode": torch.empty((length, envs, teams), dtype=torch.long, device=device),
+        "role": torch.empty(
+            (length, envs, teams, soldiers), dtype=torch.long, device=device
+        ),
         "neighbors": torch.empty(
             (length, envs, teams, soldiers, state.neighbors.shape[-1]),
             dtype=torch.int16,

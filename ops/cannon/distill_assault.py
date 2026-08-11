@@ -43,6 +43,8 @@ MODEL_KWARGS = {
     "log_std_floor": -0.8,
     "memory_size": 64,
     "message_size": 8,
+    "role_count": 8,
+    "role_size": 8,
 }
 
 
@@ -86,7 +88,13 @@ def main():
     optimizer = torch.optim.AdamW(student.parameters(), lr=1e-3, weight_decay=1e-5)
     schedule = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, STEPS, 1e-5)
 
-    env = RLEnv(Config(), NUM_ENVS, DEVICE, mode_count=MODEL_KWARGS["mode_count"])
+    env = RLEnv(
+        Config(),
+        NUM_ENVS,
+        DEVICE,
+        mode_count=MODEL_KWARGS["mode_count"],
+        role_count=MODEL_KWARGS["role_count"],
+    )
     bases = torch.as_tensor(
         strongpoint_world_centers(env.config), dtype=torch.float32, device=DEVICE
     )
@@ -126,6 +134,14 @@ def main():
                 f"step {step + 1}: loss {sum(losses[-n:]) / n:.5f}  move-cosine {sum(agreements[-n:]) / n:.4f}",
                 flush=True,
             )
+
+    # Behavior cloning teaches the student to IGNORE roles (the teacher is
+    # role-blind), which would zero out the exploration bias roles exist to
+    # provide. Reinitialize the role pathway so the warm start carries the
+    # charger behavior plus fresh, visible per-soldier role biases.
+    if MODEL_KWARGS["role_count"]:
+        torch.nn.init.orthogonal_(student.role_embedding.weight)
+        torch.nn.init.orthogonal_(student.role_policy_bias.weight, 0.3)
 
     OUTPUT.parent.mkdir(parents=True, exist_ok=True)
     fresh = torch.optim.Adam(student.parameters(), lr=1e-3, eps=1e-5)

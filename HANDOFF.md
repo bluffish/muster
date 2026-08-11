@@ -42,9 +42,9 @@ from `muster.*`.
 
 ## Current run
 
-- Config: `configs/v19-score.env` → run `local-hex-v19-score-v1`,
-  W&B `bowen3-v19-score-v1`
-- Service on AWS: `muster-training@v19-score.service`
+- Config: `configs/v19-score.env` → run `local-hex-v22-roles-v1`,
+  W&B `bowen3-v22-roles-v1`
+- Service on AWS: `muster-training@v22-assault-roles.service`
 - Rules v0.7 with score observability (features 11/12); architecture: entity
   attention (v14), 64-unit GRU memory with BPTT-15 (v15), 16 episode modes,
   dormant 8-wide message slot; mixed opponents (75% pool / 25% charger);
@@ -56,10 +56,10 @@ One template unit serves every experiment; the instance name selects the
 config file:
 
 ```sh
-ssh -i "$identity" "$remote" 'sudo systemctl enable --now muster-training@v19-score'
-ssh -i "$identity" "$remote" 'sudo systemctl stop muster-training@v19-score'      # pause
-ssh -i "$identity" "$remote" 'sudo systemctl disable --now muster-training@v19-score'
-ssh -i "$identity" "$remote" 'tail -5 /home/ubuntu/muster-local-hex/runs/local-hex-v19-score-v1/metrics.jsonl'
+ssh -i "$identity" "$remote" 'sudo systemctl enable --now muster-training@v22-assault-roles'
+ssh -i "$identity" "$remote" 'sudo systemctl stop muster-training@v22-assault-roles'      # pause
+ssh -i "$identity" "$remote" 'sudo systemctl disable --now muster-training@v22-assault-roles'
+ssh -i "$identity" "$remote" 'tail -5 /home/ubuntu/muster-local-hex/runs/local-hex-v22-roles-v1/metrics.jsonl'
 ```
 
 The launcher resumes `latest.pt` when it exists. **Starting a new

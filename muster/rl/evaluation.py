@@ -27,13 +27,17 @@ class AnchorEvaluator:
         mode_count: int,
         episodes_per_mode: int = 4,
         action_repeat: int = 1,
+        role_count: int = 0,
     ) -> None:
         if episodes_per_mode < 2 or episodes_per_mode % 2:
             raise ValueError("--anchor-episodes must be a positive even number")
         self.mode_count = max(1, mode_count)
         self.action_repeat = action_repeat
         num_envs = self.mode_count * episodes_per_mode
-        self.env = RLEnv(config, num_envs, device, mode_count=self.mode_count)
+        self.env = RLEnv(
+            config, num_envs, device, mode_count=self.mode_count,
+            role_count=max(1, role_count),
+        )
         index = torch.arange(num_envs, device=self.env.device)
         self.learner_index = index.remainder(2)
         learner_teams = torch.zeros((num_envs, 2), dtype=torch.bool, device=self.env.device)

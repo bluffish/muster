@@ -3,7 +3,28 @@
 Version history of the training stack and game rules. Each run's exact flags
 are preserved in its checkpoint (`train_args`) and in git history.
 
-## v21 — assault scoring (rules 0.11, current)
+## v22 — per-soldier episode roles (current)
+The garrison experiments settled why the swap meta survived 3,400
+updates despite a one-soldier defensive deviation paying +0.025 (and 16
+soldiers paying +0.29 with 82% survival): the payoff requires
+episode-persistent commitment, and exploration was i.i.d.-in-time
+(Gaussian action noise) or team-wide (modes) — the sampling measure
+assigns essentially zero probability to persistent minority deviations,
+so the gradient never sees them. v22 adds per-soldier episode roles:
+each soldier independently draws one of 8 role latents per episode,
+embedded into the backbone and biasing the action mean (gain 0.3, like
+modes but per soldier), making 'a few soldiers persistently behave
+differently' a routinely sampled event. Also: the scripted charger is
+now perception-limited (fair vision, marches the enemy base otherwise),
+opponents are mixed (25% scripted), and the pool eviction window grows
+from 8 updates to 400 (16 snapshots, every 25) so metas must beat their
+own history. Home-guard was considered and rejected: the data shows
+defense already pays without rule support. CHECKPOINT_VERSION 14.
+Run: local-hex-v22-roles-v1 (bowen3), warm-started from a re-distilled
+assault charger whose role pathway is freshly initialized after cloning
+(cloning would otherwise teach role-blindness).
+
+## v21 — assault scoring (rules 0.11)
 The bases. Each team owns one radius-1 base deep in its half of the long
 map — (-14,7) west / (14,-7) east, midline-centered mirror pair — and scores ONLY
 through influence on the enemy's base (weight 250/tile, ~76% of a team's

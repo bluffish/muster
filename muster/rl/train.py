@@ -179,6 +179,13 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--mode-size", type=int, default=16, help="mode embedding width")
     parser.add_argument(
+        "--role-count",
+        type=int,
+        default=0,
+        help="per-soldier episode roles (persistent minority exploration); zero disables",
+    )
+    parser.add_argument("--role-size", type=int, default=8, help="role embedding width")
+    parser.add_argument(
         "--mode-mi-beta",
         type=float,
         default=0.0,
@@ -264,14 +271,23 @@ def main() -> None:
         "mode_size": args.mode_size,
         "memory_size": args.memory_size,
         "message_size": args.message_size,
+        "role_count": args.role_count,
+        "role_size": args.role_size,
     }
     if args.log_std_floor is not None:
         model_kwargs["log_std_floor"] = args.log_std_floor
     mode_count = int(model_kwargs.get("mode_count", 0) or 0)
     memory_size = int(model_kwargs.get("memory_size", 0) or 0)
+    role_count = int(model_kwargs.get("role_count", 0) or 0)
     if memory_size and args.rollout % args.bptt_window:
         raise ValueError("--rollout must be divisible by --bptt-window")
-    env = RLEnv(config, args.envs, args.device, mode_count=max(1, mode_count))
+    env = RLEnv(
+        config,
+        args.envs,
+        args.device,
+        mode_count=max(1, mode_count),
+        role_count=max(1, role_count),
+    )
     policy = Policy(**model_kwargs).to(device)
     policy.use_bf16 = args.dtype == "bf16"
     optimizer = torch.optim.Adam(policy.parameters(), lr=args.learning_rate, eps=1e-5)
@@ -330,7 +346,12 @@ def main() -> None:
             bandit_returns.copy_(checkpoint["mode_bandit_returns"].to(device))
     anchor = (
         AnchorEvaluator(
-            config, args.device, mode_count, args.anchor_episodes, args.action_repeat
+            config,
+            args.device,
+            mode_count,
+            args.anchor_episodes,
+            args.action_repeat,
+            role_count=role_count,
         )
         if args.anchor_every > 0
         else None
