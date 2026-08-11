@@ -139,8 +139,10 @@ class Policy(nn.Module):
             nn.Linear(tile_size, tile_size),
             nn.SiLU(),
         )
+        # Roles are per-soldier and never join the per-team global context,
+        # so the global critic pathway conditions on modes only.
         self.global_value_encoder = nn.Sequential(
-            nn.Linear(2 * tile_size + conditioning, hidden_size),
+            nn.Linear(2 * tile_size + (mode_size if mode_count else 0), hidden_size),
             nn.SiLU(),
             nn.Linear(hidden_size, hidden_size),
         )
