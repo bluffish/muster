@@ -74,7 +74,10 @@ done
 # root page redirects to its newest replay.
 current_target=$(readlink "$published_link" 2>/dev/null || true)
 desired_target="runs/$active_run/replays"
-if test -d "$published_root/$desired_target" && test "$current_target" != "$desired_target"; then
+# Only follow the active run once it has published content; until then the
+# previous run keeps serving, so a freshly-started run never breaks the site.
+if test -f "$published_root/$desired_target/manifest.json" \
+    && test "$current_target" != "$desired_target"; then
     temporary_file="$published_root/.replays-link.$$"
     ln -s "$desired_target" "$temporary_file"
     mv -Tf "$temporary_file" "$published_link"
