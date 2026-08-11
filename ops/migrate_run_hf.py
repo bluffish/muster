@@ -42,9 +42,24 @@ def main() -> None:
     staging = STAGING / run
     staging.mkdir(parents=True, exist_ok=True)
 
+    # The Hub caps directories at 10,000 files, so large runs shard into
+    # b<update//1000>/ subdirectories. The viewer app knows this fallback.
+    shard = len(replays) > 9000
+
+    def target_for(stem: str) -> Path:
+        if not shard:
+            return staging / (stem + ".json.gz")
+        update = int(stem.split("-")[1])
+        bucket = staging / f"b{update // 1000}"
+        bucket.mkdir(exist_ok=True)
+        return bucket / (stem + ".json.gz")
+
     staged = 0
     for path in replays:
-        target = staging / (path.stem + ".json.gz")
+        target = target_for(path.stem)
+        flat = staging / (path.stem + ".json.gz")
+        if shard and flat.exists() and not target.exists():
+            flat.rename(target)  # re-shard an existing flat staging in place
         if target.exists():
             staged += 1
             continue

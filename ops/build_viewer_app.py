@@ -21,8 +21,18 @@ const appDataBase="__DATA_BASE__";
 function pageUrl(update) { return "/view.html?run="+encodeURIComponent(appRun)+"&u="+update; }
 async function loadReplay() {
   if (!appRun||!Number.isInteger(appUpdate)) throw new Error("missing ?run= and ?u= parameters");
-  const response=await fetch(appDataBase+"/"+appRun+"/update-"+appUpdate+".json.gz");
-  if (!response.ok) throw new Error("replay data not found ("+response.status+")");
+  // Large runs shard payloads into b<update//1000>/ subdirectories (the
+  // Hub caps directories at 10k files); try flat first, then sharded.
+  const candidates=[
+    appDataBase+"/"+appRun+"/update-"+appUpdate+".json.gz",
+    appDataBase+"/"+appRun+"/b"+Math.floor(appUpdate/1000)+"/update-"+appUpdate+".json.gz",
+  ];
+  let response=null;
+  for (const url of candidates) {
+    response=await fetch(url);
+    if (response.ok) break;
+  }
+  if (!response||!response.ok) throw new Error("replay data not found ("+(response?response.status:"?")+")");
   const stream=response.body.pipeThrough(new DecompressionStream("gzip"));
   return JSON.parse(await new Response(stream).text());
 }
