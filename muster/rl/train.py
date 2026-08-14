@@ -26,6 +26,7 @@ from muster.rl.policy import CHECKPOINT_VERSION, Policy
 from muster.rl.pool import OpponentPool
 from muster.rl.ppo import compute_gae, ppo_update
 from muster.rl.rollout import (
+    CreditConfig,
     RolloutReplay,
     collect_rollout,
     make_rollout,
@@ -33,7 +34,7 @@ from muster.rl.rollout import (
     synchronize,
     write_rollout_replay,
 )
-from muster.sim import Config
+from muster.sim import TEAM_TOTAL_WEIGHT, Config
 
 def compile_policies(policy: Policy, pool: OpponentPool | None, mode: str) -> None:
     """Compile hot neural callables without wrapping checkpointed modules."""
@@ -185,6 +186,32 @@ def parse_args() -> argparse.Namespace:
         help="per-soldier episode roles (persistent minority exploration); zero disables",
     )
     parser.add_argument("--role-size", type=int, default=8, help="role embedding width")
+    parser.add_argument(
+        "--team-spirit-start",
+        type=float,
+        default=1.0,
+        help="initial tau: share of the team reward in each soldier's reward "
+        "(1.0 = pure team reward, disabling individual credit)",
+    )
+    parser.add_argument("--team-spirit-end", type=float, default=1.0)
+    parser.add_argument(
+        "--team-spirit-anneal-updates",
+        type=int,
+        default=1,
+        help="updates over which tau anneals from start to end",
+    )
+    parser.add_argument(
+        "--credit-combat-scale",
+        type=float,
+        default=0.075,
+        help="episode-return value of a full health bar of damage dealt (pairwise zero-sum transfer)",
+    )
+    parser.add_argument(
+        "--credit-income-scale",
+        type=float,
+        default=1.0,
+        help="scale on the exact per-soldier territory income and denial attribution",
+    )
     parser.add_argument(
         "--mode-mi-beta",
         type=float,
@@ -410,7 +437,17 @@ def main() -> None:
                 replay_capture.retarget(pool_replay_env, "pool", 0)
             else:
                 replay_capture.retarget(0, "nearest", 0)
-        state, bootstrap, collection_seconds = collect_rollout(
+        anneal = min(1.0, (update - 1) / max(1, args.team_spirit_anneal_updates))
+        tau = args.team_spirit_start + (args.team_spirit_end - args.team_spirit_start) * anneal
+        credit = CreditConfig(
+            tau=tau,
+            combat_scale=args.credit_combat_scale,
+            income_scale=args.credit_income_scale,
+            initial_health=config.initial_health,
+            team_total_weight=float(TEAM_TOTAL_WEIGHT),
+            maximum_decision_steps=config.maximum_decision_steps,
+        )
+        state, bootstrap, collection_seconds, credit_stats = collect_rollout(
             env,
             policy,
             rollout,
@@ -425,6 +462,7 @@ def main() -> None:
             learner_memory=learner_memory,
             opponent_memory=opponent_memory,
             bptt_window=args.bptt_window,
+            credit=credit,
         )
         if replay_due:
             replay = replay_capture.replay(rollout["done"], rollout["winner"], update)
@@ -508,6 +546,7 @@ def main() -> None:
             "policy_soldier_decisions_per_second": policy_decisions * config.soldier_count / (collection_seconds + learning_seconds),
             "collection_seconds": collection_seconds,
             "learning_seconds": learning_seconds,
+            **credit_stats,
             **episode_metrics(rollout, learner_teams),
             **(
                 {

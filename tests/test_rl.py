@@ -373,6 +373,51 @@ def test_actor_is_side_equivariant_at_the_symmetric_start():
     torch.testing.assert_close(values[:, 0], values[:, 1], rtol=1e-5, atol=1e-6)
 
 
+def test_team_spirit_mixing_composes_per_soldier_rewards():
+    torch = pytest.importorskip("torch")
+    wp = pytest.importorskip("warp")
+    from policy import Policy
+    from rl_env import RLEnv
+    from simulator import TEAM_TOTAL_WEIGHT, Config
+    from train import CreditConfig, collect_rollout, make_rollout
+
+    device = "cuda" if torch.cuda.is_available() and wp.is_cuda_available() else "cpu"
+    config = Config(soldiers_per_team=2, maximum_episode_seconds=0.3)
+    env = RLEnv(config, num_envs=2, device=device)
+    state = env.reset()
+    policy = Policy(hidden_size=32, entity_size=8, tile_size=16).to(env.device)
+    rollout = make_rollout(3, state)
+    learner_teams = torch.zeros((2, 2), dtype=torch.bool, device=env.device)
+    learner_teams[0, 0] = learner_teams[1, 1] = True
+
+    credit = CreditConfig(
+        tau=0.5,
+        combat_scale=0.1,
+        income_scale=1.0,
+        initial_health=config.initial_health,
+        team_total_weight=float(TEAM_TOTAL_WEIGHT),
+        maximum_decision_steps=config.maximum_decision_steps,
+    )
+    _, _, _, stats = collect_rollout(
+        env, policy, rollout, state, learner_teams, None, None, credit=credit
+    )
+    assert rollout["reward"].shape == (3, 2, 2, 2)
+    assert stats["credit_tau"] == 0.5
+    assert stats["credit_income_mean"] > 0  # someone always earns something
+    # Soldiers of one team differ when their individual channels differ, and
+    # the team component keeps them correlated.
+    assert torch.isfinite(rollout["reward"]).all()
+
+    # tau = 1 must reproduce the pure team broadcast: identical values for
+    # every soldier of a team.
+    env2 = RLEnv(config, num_envs=2, device=device)
+    state2 = env2.reset()
+    rollout2 = make_rollout(3, state2)
+    collect_rollout(env2, policy, rollout2, state2, learner_teams, None, None)
+    spread = rollout2["reward"].std(dim=-1)
+    assert float(spread.max()) < 1e-6
+
+
 def test_per_soldier_roles_bias_actions_and_persist_per_episode():
     torch = pytest.importorskip("torch")
     wp = pytest.importorskip("warp")

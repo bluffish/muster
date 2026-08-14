@@ -17,7 +17,9 @@ def compute_gae(
     for step in range(rollout["reward"].shape[0] - 1, -1, -1):
         next_value = bootstrap if step == rollout["reward"].shape[0] - 1 else rollout["value"][step + 1]
         continuing = (~rollout["done"][step]).to(bootstrap.dtype).view(-1, 1, 1)
-        reward = rollout["reward"][step].unsqueeze(-1)
+        reward = rollout["reward"][step]
+        if reward.dim() == 2:  # team-level reward broadcasts across soldiers
+            reward = reward.unsqueeze(-1)
         delta = reward + gamma * next_value * continuing - rollout["value"][step]
         advantage = delta + gamma * gae_lambda * continuing * advantage
         rollout["advantage"][step].copy_(advantage)

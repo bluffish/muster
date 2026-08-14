@@ -57,6 +57,11 @@ class CpuSimulator:
         self.advantage_integral = np.zeros(num_envs, np.float64)
         self.control_share = np.zeros((num_envs, TERRITORY_CELLS, 2), np.float32)
         self.invalid_action = np.zeros(num_envs, bool)
+        # Per-soldier credit accumulators, cumulative within an episode.
+        self.damage_dealt = np.zeros(shape, np.float32)
+        self.damage_taken = np.zeros(shape, np.float32)
+        self.credit_income = np.zeros(shape, np.float32)
+        self.credit_denial = np.zeros(shape, np.float32)
         self._territory_centers = territory_centers(self.config)
         self.reset()
 
@@ -163,6 +168,10 @@ class CpuSimulator:
         self.winner.fill(-2)
         self.advantage_integral.fill(0.0)
         self.control_share.fill(0.0)
+        self.damage_dealt.fill(0.0)
+        self.damage_taken.fill(0.0)
+        self.credit_income.fill(0.0)
+        self.credit_denial.fill(0.0)
         self.territory_owner[:] = TERRITORY_INITIAL_OWNER
         if state and "territory_owner" in state:
             owner = np.asarray(state["territory_owner"], dtype=np.int8)
@@ -264,6 +273,7 @@ class CpuSimulator:
         c = self.config
         arc_cos = math.cos(math.radians(c.damaging_arc_degrees / 2))
         received = np.zeros(self.num_soldiers, np.float32)
+        dealt = np.zeros(self.num_soldiers, np.float32)
         struck = np.zeros(self.num_soldiers, bool)
         position = self.position[env]
         velocity = self.velocity[env]
@@ -313,9 +323,11 @@ class CpuSimulator:
             direction_to_attacker = -attack_direction
             protected = np.dot(facing[target], direction_to_attacker) >= arc_cos
             vulnerability = 1.0 if protected else c.flank_damage_multiplier
-            received[target] += max(c.base_strike_damage, charge) * vulnerability
+            amount = max(c.base_strike_damage, charge) * vulnerability
+            received[target] += amount
+            dealt[attacker] += amount
             struck[attacker] = True
-        return received, struck
+        return received, struck, dealt
 
     def _collision_changes(
         self,
@@ -401,7 +413,9 @@ class CpuSimulator:
         for env in np.flatnonzero(~self.done):
             self._resolve_static(int(env), self.alive[env])
             normal, distance, touching, closing, allied = self._geometry(int(env))
-            damage, struck = self._strikes(int(env))
+            damage, struck, dealt = self._strikes(int(env))
+            self.damage_dealt[env] += dealt
+            self.damage_taken[env] += damage * self.alive[env]
             velocity_change, position_change = self._collision_changes(
                 int(env), normal, distance, touching, closing, allied
             )
@@ -441,9 +455,12 @@ class CpuSimulator:
         initial_health = np.float32(self.config.initial_health)
         for env in np.flatnonzero(~self.done):
             fixed = np.zeros((2, TERRITORY_CELLS), np.int64)
+            quantized_by_team = {}
+            members_by_team = {}
             living = np.flatnonzero(self.alive[env])
             for team in (0, 1):
                 members = living[self.team[env, living] == team]
+                members_by_team[team] = members
                 if len(members):
                     deltas = (
                         self._territory_centers[:, None, :]
@@ -461,11 +478,11 @@ class CpuSimulator:
                         * weight[None, :]
                         * weight[None, :]
                     )
-                    fixed[team] = (
-                        np.floor(influence * INFLUENCE_FIXED_SCALE + 0.5)
-                        .astype(np.int64)
-                        .sum(axis=1)
+                    quantized = np.floor(influence * INFLUENCE_FIXED_SCALE + 0.5).astype(
+                        np.int64
                     )
+                    quantized_by_team[team] = quantized
+                    fixed[team] = quantized.sum(axis=1)
             total = (fixed[0] + fixed[1] + INFLUENCE_NEUTRAL_FIXED).astype(np.float32)
             self.control_share[env, :, 0] = fixed[0].astype(np.float32) / total
             self.control_share[env, :, 1] = fixed[1].astype(np.float32) / total
@@ -473,6 +490,21 @@ class CpuSimulator:
             owner[fixed[0] > fixed[1] + INFLUENCE_NEUTRAL_FIXED] = 0
             owner[fixed[1] > fixed[0] + INFLUENCE_NEUTRAL_FIXED] = 1
             self.territory_owner[env] = owner
+            # Per-soldier credit: income = own weight * q_i / total per cell
+            # (linear slice of the team share); denial follows the derivative
+            # of the enemy share, w_e * q_i * I_e / total^2.
+            for team in (0, 1):
+                members = members_by_team[team]
+                if not len(members):
+                    continue
+                quantized = quantized_by_team[team].astype(np.float32)
+                own_weight = TEAM_TERRITORY_WEIGHTS[team].astype(np.float32)
+                enemy_weight = TEAM_TERRITORY_WEIGHTS[1 - team].astype(np.float32)
+                enemy_fixed = fixed[1 - team].astype(np.float32)
+                self.credit_income[env, members] += (own_weight / total) @ quantized
+                self.credit_denial[env, members] += (
+                    enemy_weight * enemy_fixed / (total * total)
+                ) @ quantized
 
     def _accumulate_control(self) -> None:
         for env in np.flatnonzero(~self.done):

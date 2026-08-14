@@ -357,6 +357,10 @@ def _reset_soldiers(
     health: wp.array(dtype=float),
     alive: wp.array(dtype=wp.int32),
     attack_cooldown: wp.array(dtype=wp.int32),
+    damage_dealt: wp.array(dtype=float),
+    damage_taken: wp.array(dtype=float),
+    credit_income: wp.array(dtype=float),
+    credit_denial: wp.array(dtype=float),
     p: _Params,
 ):
     index = wp.tid()
@@ -372,6 +376,10 @@ def _reset_soldiers(
     health[index] = next_health
     alive[index] = int(next_health > 0.0)
     attack_cooldown[index] = 0
+    damage_dealt[index] = 0.0
+    damage_taken[index] = 0.0
+    credit_income[index] = 0.0
+    credit_denial[index] = 0.0
 
 
 @wp.kernel
@@ -482,6 +490,9 @@ def _control_territory_owner(
     centers: wp.array(dtype=wp.vec2),
     owner: wp.array(dtype=wp.int32),
     share: wp.array(dtype=float),
+    team_weights: wp.array(dtype=wp.int32),
+    credit_income: wp.array(dtype=float),
+    credit_denial: wp.array(dtype=float),
     p: _Params,
 ):
     """Health-weighted soft influence with order-invariant fixed-point summation."""
@@ -512,6 +523,40 @@ def _control_territory_owner(
     total = float(fixed_0 + fixed_1 + INFLUENCE_NEUTRAL_FIXED)
     share[index * 2] = float(fixed_0) / total
     share[index * 2 + 1] = float(fixed_1) / total
+    # Per-soldier credit attribution. A soldier's slice of its team's
+    # income on this cell is q_i / total (the share formula is linear in
+    # per-soldier influence); its denial of the ENEMY share follows the
+    # derivative d(share_e)/d(q_i) = -I_e / total^2. Both use the same
+    # quantized contributions as the share sums, so credit sums to the
+    # scored quantities exactly.
+    for credit_local in range(p.num_soldiers):
+        credit_soldier = base + credit_local
+        if alive[credit_soldier] == 0:
+            continue
+        credit_health = health[credit_soldier] / p.initial_health
+        if credit_health > 1.0:
+            credit_health = 1.0
+        credit_delta = position[credit_soldier] - center
+        credit_influence = (
+            wp.exp(wp.dot(credit_delta, credit_delta) * scale)
+            * credit_health
+            * credit_health
+        )
+        credit_q = wp.floor(credit_influence * float(INFLUENCE_FIXED_SCALE) + 0.5)
+        if credit_q <= 0.0:
+            continue
+        own = team[credit_soldier]
+        own_weight = float(team_weights[own * p.territory_cells + cell])
+        enemy_weight = float(team_weights[(1 - own) * p.territory_cells + cell])
+        enemy_fixed = float(fixed_1)
+        if own == 1:
+            enemy_fixed = float(fixed_0)
+        wp.atomic_add(credit_income, credit_soldier, own_weight * credit_q / total)
+        wp.atomic_add(
+            credit_denial,
+            credit_soldier,
+            enemy_weight * credit_q * enemy_fixed / (total * total),
+        )
     result = int(-1)
     if fixed_0 > fixed_1 + INFLUENCE_NEUTRAL_FIXED:
         result = 0
@@ -644,6 +689,8 @@ def _first_effects(
     strike_target: wp.array(dtype=wp.int32),
     done: wp.array(dtype=wp.int32),
     damage: wp.array(dtype=float),
+    damage_dealt: wp.array(dtype=float),
+    damage_taken: wp.array(dtype=float),
     velocity_delta: wp.array(dtype=wp.vec2),
     position_delta: wp.array(dtype=wp.vec2),
     p: _Params,
@@ -693,8 +740,14 @@ def _first_effects(
             vulnerability = p.flank_multiplier
             if wp.dot(own_facing, direction_to_attacker) >= p.arc_cos:
                 vulnerability = 1.0
-            total_damage += wp.max(p.base_strike_damage, charge) * vulnerability
+            struck = wp.max(p.base_strike_damage, charge) * vulnerability
+            total_damage += struck
+            # Per-soldier credit: the attacker is known here, so damage is
+            # individually attributable at the source.
+            wp.atomic_add(damage_dealt, other_index, struck)
     damage[index] = total_damage
+    if total_damage > 0.0:
+        damage_taken[index] = damage_taken[index] + total_damage
 
 
 @wp.kernel
@@ -897,6 +950,11 @@ class GpuSimulator:
         self.attack_cooldown_ticks = wp.empty(
             self.total_soldiers, dtype=wp.int32, device=self.device
         )
+        # Per-soldier credit accumulators, cumulative within an episode.
+        self.damage_dealt = wp.zeros(self.total_soldiers, dtype=float, device=self.device)
+        self.damage_taken = wp.zeros(self.total_soldiers, dtype=float, device=self.device)
+        self.credit_income = wp.zeros(self.total_soldiers, dtype=float, device=self.device)
+        self.credit_denial = wp.zeros(self.total_soldiers, dtype=float, device=self.device)
         self.step_count = wp.empty(self.num_envs, dtype=wp.int32, device=self.device)
         self.substep_count = wp.empty(self.num_envs, dtype=wp.int32, device=self.device)
         self.done = wp.empty(self.num_envs, dtype=wp.int32, device=self.device)
@@ -1011,6 +1069,10 @@ class GpuSimulator:
                 self.health,
                 self.alive,
                 self.attack_cooldown_ticks,
+                self.damage_dealt,
+                self.damage_taken,
+                self.credit_income,
+                self.credit_denial,
                 self.params,
             ],
             device=self.device,
@@ -1243,6 +1305,8 @@ class GpuSimulator:
                     self.strike_target,
                     self.done,
                     self.damage,
+                    self.damage_dealt,
+                    self.damage_taken,
                     self.velocity_delta,
                     self.position_delta,
                     self.params,
@@ -1331,6 +1395,9 @@ class GpuSimulator:
                 self._territory_centers,
                 self.territory_owner,
                 self.control_share,
+                self.territory_weights,
+                self.credit_income,
+                self.credit_denial,
                 self.params,
             ],
             device=self.device,

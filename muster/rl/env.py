@@ -483,6 +483,11 @@ class RLEnv:
             self.num_envs, TERRITORY_CELLS
         )
         self.territory = wp.to_torch(self._territory).view(self.num_envs, 2)
+        # Per-soldier credit accumulators (cumulative within an episode).
+        self.damage_dealt = wp.to_torch(self.sim.damage_dealt).view(shape)
+        self.damage_taken = wp.to_torch(self.sim.damage_taken).view(shape)
+        self.credit_income = wp.to_torch(self.sim.credit_income).view(shape)
+        self.credit_denial = wp.to_torch(self.sim.credit_denial).view(shape)
         fact_tensor = wp.to_torch(self._facts)
         self.facts = {
             "damage_taken": fact_tensor[:, 0:2],

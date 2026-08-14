@@ -177,6 +177,70 @@ def test_each_ready_soldier_strikes_only_the_most_centered_target():
     np.testing.assert_allclose(sim.health[0], [100, 100, 90, 100])
 
 
+def test_per_soldier_credit_attribution():
+    # Combat: both soldiers strike once; dealt and taken attribute exactly.
+    config, state, actions = two_soldier_strike()
+    cpu = CpuSimulator(config)
+    cpu.reset(state)
+    cpu.step(actions)
+    np.testing.assert_allclose(cpu.damage_dealt[0], [16, 16])
+    np.testing.assert_allclose(cpu.damage_taken[0], [16, 16])
+
+    # Income: a soldier on its scoring target earns; totals conserve.
+    scoring = Config(soldiers_per_team=1, maximum_episode_seconds=0.1)
+    centers = territory_centers(scoring)
+    cpu = CpuSimulator(scoring)
+    cpu.reset(
+        {
+            "position": np.array(
+                [centers[territory_cell(14, -7)], centers[territory_cell(-5, 2)]],
+                np.float32,
+            ),
+        }
+    )
+    cpu.step(np.zeros((1, 2, 4), np.float32))
+    assert cpu.credit_income[0, 0] > cpu.credit_income[0, 1] > 0
+    for team in (0, 1):
+        members = np.flatnonzero(cpu.team[0] == team)
+        earned = float(cpu.credit_income[0, members].sum())
+        scored = float(
+            (TEAM_TERRITORY_WEIGHTS[team] * cpu.control_share[0, :, team]).sum()
+        )
+        np.testing.assert_allclose(earned, scored, rtol=1e-4)
+
+    # Denial: a defender on its own base suppresses an adjacent attacker.
+    cpu.reset(
+        {
+            "position": np.array(
+                [centers[territory_cell(13, -6)], centers[territory_cell(14, -7)]],
+                np.float32,
+            ),
+        }
+    )
+    cpu.step(np.zeros((1, 2, 4), np.float32))
+    assert cpu.credit_denial[0, 1] > 0.5  # team-1 defender dilutes the raid
+
+    # GPU parity for all four accumulators.
+    wp = pytest.importorskip("warp")
+    from simulator_gpu import GpuSimulator
+
+    config, state, actions = two_soldier_strike()
+    cpu = CpuSimulator(config)
+    cpu.reset(state)
+    cpu.step(actions)
+    device = "cuda" if wp.is_cuda_available() else "cpu"
+    warp_sim = GpuSimulator(config, device=device)
+    warp_sim.reset(state)
+    warp_sim.step(actions)
+    import warp as _wp
+
+    for name in ("damage_dealt", "damage_taken", "credit_income", "credit_denial"):
+        gpu_values = getattr(warp_sim, name).numpy().reshape(1, -1)
+        np.testing.assert_allclose(
+            gpu_values, getattr(cpu, name), rtol=1e-4, atol=1e-5
+        )
+
+
 def test_timeout_winner_integrates_weighted_control():
     config = Config(soldiers_per_team=1, maximum_episode_seconds=0.1)
     centers = territory_centers(config)

@@ -3,7 +3,22 @@
 Version history of the training stack and game rules. Each run's exact flags
 are preserved in its checkpoint (`train_args`) and in git history.
 
-## v22 — per-soldier episode roles (current)
+## v23 — per-soldier credit (built, not yet launched)
+Team-spirit mixing: each soldier's reward blends the team advantage with
+an individual stream, tau annealing 0.3 -> 1.0 over 8k updates so the
+final objective is exactly the team game. Individual channels: exact
+territory income attribution (a soldier's slice of every cell's share is
+linear in its influence contribution, so credit sums to the scored
+quantity), denial attribution (the derivative of the enemy share w.r.t.
+the soldier's influence — the garrison's paycheck), and a pairwise
+zero-sum combat transfer (attacker +, victim -, flank multiplier
+included, so the turned-back rout personally pays double). Motivated by
+v22's fortress era: 25-0 defender record, routs with turned backs, and
+melee facing discipline stuck at the noise floor of broadcast credit.
+Sim kernels attribute per-soldier damage dealt/taken and income/denial
+(CPU/GPU parity tested); rewards and GAE are per-soldier.
+
+## v22 — per-soldier episode roles
 The garrison experiments settled why the swap meta survived 3,400
 updates despite a one-soldier defensive deviation paying +0.025 (and 16
 soldiers paying +0.29 with 82% survival): the payoff requires

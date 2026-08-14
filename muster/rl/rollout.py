@@ -218,6 +218,35 @@ def reward_from_facts(
         output[:, 0].copy_(advantage)
     torch.neg(output[:, 0], out=output[:, 1])
 
+class CreditConfig:
+    """Team-spirit mixing of the team reward with per-soldier channels.
+
+    reward_i = tau * R_team + (1 - tau) * (income_scale * (income_i + denial_i)
+               + combat_scale * (dealt_i - taken_i) / initial_health)
+
+    Income and denial come from the influence kernel's exact attribution and
+    are normalized by team total weight and episode length so a soldier's
+    channel is in the same episode-return units as the team reward. tau = 1
+    reproduces the pure team-reward broadcast.
+    """
+
+    def __init__(
+        self,
+        tau: float = 1.0,
+        combat_scale: float = 0.0,
+        income_scale: float = 0.0,
+        initial_health: float = 100.0,
+        team_total_weight: float = 1.0,
+        maximum_decision_steps: int = 1,
+    ) -> None:
+        self.tau = float(tau)
+        self.combat_scale = float(combat_scale)
+        self.income_scale = float(income_scale)
+        self.initial_health = float(initial_health)
+        self.team_total_weight = float(team_total_weight)
+        self.maximum_decision_steps = int(maximum_decision_steps)
+
+
 def make_rollout(
     length: int,
     state: LocalState,
@@ -274,7 +303,9 @@ def make_rollout(
         "value": torch.empty(
             (length, envs, teams, soldiers), dtype=torch.float32, device=device
         ),
-        "reward": torch.empty((length, envs, teams), dtype=torch.float32, device=device),
+        "reward": torch.empty(
+            (length, envs, teams, soldiers), dtype=torch.float32, device=device
+        ),
         "done": torch.empty((length, envs), dtype=torch.bool, device=device),
         "winner": torch.empty((length, envs), dtype=torch.int32, device=device),
         "territory": torch.empty((length, envs, teams), dtype=torch.float32, device=device),
@@ -320,13 +351,40 @@ def collect_rollout(
     learner_memory: torch.Tensor | None = None,
     opponent_memory: torch.Tensor | None = None,
     bptt_window: int = 1,
-) -> tuple[LocalState, torch.Tensor, float]:
+    credit: CreditConfig | None = None,
+) -> tuple[LocalState, torch.Tensor, float, dict[str, float]]:
     synchronize(state.features.device)
     started = time.perf_counter()
+    credit = credit or CreditConfig(
+        initial_health=env.config.initial_health,
+        maximum_decision_steps=env.config.maximum_decision_steps,
+    )
     learner_mask = learner_teams[:, :, None, None]
     reward_scale = 1.0 / env.config.maximum_decision_steps
     step_damage = torch.zeros_like(rollout["damage"][0])
     step_territory_delta = torch.zeros_like(step_damage)
+    team_reward = torch.zeros(
+        (env.num_envs, 2), dtype=torch.float32, device=state.features.device
+    )
+    # Per-soldier credit channels: cumulative sim accumulators are diffed per
+    # rollout step. An episode reset zeroes the accumulators, so a negative
+    # delta means "reset happened"; the post-reset value is the correct delta.
+    def credit_snapshot():
+        return (
+            env.damage_dealt.clone(),
+            env.damage_taken.clone(),
+            env.credit_income.clone(),
+            env.credit_denial.clone(),
+        )
+
+    def credit_delta(previous):
+        deltas = []
+        for prev, cur in zip(previous, (env.damage_dealt, env.damage_taken, env.credit_income, env.credit_denial)):
+            d = cur - prev
+            deltas.append(torch.where(d < 0, cur, d))
+        return deltas
+
+    credit_totals = {"combat": 0.0, "income": 0.0, "denial": 0.0}
     if replay is not None:
         replay.start()
     for step in range(rollout["features"].shape[0]):
@@ -359,6 +417,7 @@ def collect_rollout(
         rollout["actions"][step].copy_(actions)
         rollout["log_prob"][step].copy_(log_prob)
         rollout["value"][step].copy_(value)
+        credit_before = credit_snapshot()
         for repeat in range(action_repeat):
             state, facts = env.step(
                 actions,
@@ -366,7 +425,7 @@ def collect_rollout(
                 before_reset=replay.capture if replay is not None else None,
             )
             reward_from_facts(
-                rollout["reward"][step],
+                team_reward,
                 facts,
                 accumulate=repeat > 0,
                 scale=reward_scale,
@@ -387,6 +446,26 @@ def collect_rollout(
             rollout["territory"][step].copy_(facts["territory"])
             if pool is not None:
                 pool.resample_finished(opponent_slots, facts["done"].bool())
+        dealt, taken, income, denial = credit_delta(credit_before)
+        individual = credit.combat_scale * (dealt - taken) / credit.initial_health
+        earnings = (income + denial) * (
+            credit.income_scale
+            / (credit.team_total_weight * credit.maximum_decision_steps)
+        )
+        individual = individual + earnings
+        rollout["reward"][step].copy_(
+            credit.tau * team_reward.unsqueeze(-1)
+            + (1.0 - credit.tau) * individual
+        )
+        credit_totals["combat"] += float(
+            (credit.combat_scale * (dealt - taken) / credit.initial_health).abs().mean()
+        )
+        credit_totals["income"] += float(
+            (income * credit.income_scale / (credit.team_total_weight * credit.maximum_decision_steps)).mean()
+        )
+        credit_totals["denial"] += float(
+            (denial * credit.income_scale / (credit.team_total_weight * credit.maximum_decision_steps)).mean()
+        )
         rollout["damage"][step].copy_(step_damage)
         rollout["summary"][step].copy_(
             env.team_summary(step_damage, step_territory_delta)
@@ -399,4 +478,11 @@ def collect_rollout(
                 opponent_memory[finished] = 0.0
     bootstrap = policy.value(state, learner_memory)
     synchronize(state.features.device)
-    return state, bootstrap, time.perf_counter() - started
+    steps = rollout["features"].shape[0]
+    credit_stats = {
+        "credit_tau": credit.tau,
+        "credit_combat_mean": credit_totals["combat"] / steps,
+        "credit_income_mean": credit_totals["income"] / steps,
+        "credit_denial_mean": credit_totals["denial"] / steps,
+    }
+    return state, bootstrap, time.perf_counter() - started, credit_stats

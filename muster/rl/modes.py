@@ -72,7 +72,10 @@ def add_mode_intrinsic_reward(
     gathered = log_prob.gather(-1, rollout["mode"].unsqueeze(-1)).squeeze(-1)
     bonus = beta * (gathered + math.log(mode_count))
     extrinsic = rollout["reward"][mask].abs().mean()
-    rollout["reward"].add_(bonus * mask.to(bonus.dtype))
+    addition = bonus * mask.to(bonus.dtype)
+    if rollout["reward"].dim() == addition.dim() + 1:
+        addition = addition.unsqueeze(-1)  # broadcast over the soldier axis
+    rollout["reward"].add_(addition)
     intrinsic = bonus[mask]
     return {
         "mode_intrinsic_mean": float(intrinsic.mean()),
